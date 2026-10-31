@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "studio/**"
+      - "tools/build_studio.py"
+      - "tools/release_app.py"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      APP_ICON: ${{ secrets.APP_ICON }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Icon
+        if: env.APP_ICON != ''
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/studio-app | Out-Null
+          $packed = New-Object IO.MemoryStream(, [Convert]::FromBase64String($env:APP_ICON))
+          $unzip = New-Object IO.Compression.GZipStream($packed, [IO.Compression.CompressionMode]::Decompress)
+          $icon = [IO.File]::Create("build/studio-app/app.ico")
+          $unzip.CopyTo($icon)
+          $icon.Dispose()
+          $unzip.Dispose()
+
+      - name: Build and publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $icon = @()
+          if (Test-Path build/studio-app/app.ico) { $icon = @("--icon", "build/studio-app/app.ico") }
+          python tools/release_app.py --publish @icon
