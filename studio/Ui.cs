@@ -126,4 +126,11 @@ public static class Ui
         try { System.Diagnostics.Process.Start(opener, dir)?.Dispose(); }
         catch (Exception) { }
     }
+
+    public static void Browse(string? url)
+    {
+        if (url == null || !url.StartsWith("https://", StringComparison.Ordinal)) return;
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true })?.Dispose(); }
+        catch (Exception) { }
+    }
 }

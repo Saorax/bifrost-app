@@ -14,6 +14,8 @@ public sealed record OfficialRelease(string Name, Asset Package, string? GameFil
 
 public sealed record AppRelease(string Name, Asset Exe);
 
+public sealed record ReleaseNotes(string Title, string Body, DateTimeOffset? Published, string? Url);
+
 public static class Releases
 {
     static string? Metadata(string key) => typeof(Releases).Assembly
@@ -38,14 +40,30 @@ public static class Releases
         return http;
     }
 
+    static readonly bool[] reached = new bool[Enum.GetValues<Product>().Length];
+
+    public static bool Reached(Product product) => reached[(int)product];
+
+    static readonly ReleaseNotes?[] notes = new ReleaseNotes?[Enum.GetValues<Product>().Length];
+
+    public static ReleaseNotes? Notes(Product product) => notes[(int)product];
+
+    static ReleaseNotes NotesOf(JsonObject release) => new(
+        (string?)release["name"] is { Length: > 0 } title ? title : (string?)release["tag_name"] ?? "",
+        ((string?)release["body"] ?? "").Trim(),
+        DateTimeOffset.TryParse((string?)release["published_at"], out var at) ? at : null,
+        (string?)release["html_url"] is { } url && url.StartsWith("https://github.com/", StringComparison.Ordinal) ? url : null);
+
     static async Task<(JsonNode Manifest, Dictionary<string, string> Urls)?> LatestManifestAsync(Product product)
     {
         if (ListUrl(product) is not { } url) return null;
+        reached[(int)product] = false;
         try
         {
             using var http = Client();
             http.Timeout = TimeSpan.FromSeconds(15);
             var answer = JsonNode.Parse(await http.GetStringAsync(url))!;
+            reached[(int)product] = true;
             var list = answer is JsonArray array ? array : new JsonArray(answer.DeepClone());
             var names = product == Product.Bifrost ? new[] { Manifest(product), "release.json" } : [Manifest(product)];
             foreach (var release in list.OfType<JsonObject>())
@@ -53,7 +71,9 @@ public static class Releases
                 if ((bool?)release["draft"] == true || (bool?)release["prerelease"] == true) continue;
                 var urls = release["assets"]!.AsArray().ToDictionary(a => (string)a!["name"]!, a => (string)a!["browser_download_url"]!);
                 if (names.FirstOrDefault(urls.ContainsKey) is not { } name) continue;
-                return (JsonNode.Parse(await http.GetStringAsync(urls[name]))!, urls);
+                var manifest = JsonNode.Parse(await http.GetStringAsync(urls[name]))!;
+                notes[(int)product] = NotesOf(release);
+                return (manifest, urls);
             }
             return null;
         }

@@ -212,6 +212,57 @@ public sealed class MainWindow : Window
         return accepted;
     }
 
+    async Task ShowNotes(Product product)
+    {
+        var what = product switch { Product.App => "Bifrost app", Product.Official => "Official servers", _ => "Bifrost" };
+        var notes = Releases.Notes(product);
+        var text = notes == null
+            ? Releases.Reached(product) ? $"There is no {what} release yet." : "The latest release couldn't be checked. Try again when you're online."
+            : notes.Body.Length > 0 ? Plain(notes.Body) : "This release has no description.";
+        var dialog = new Window
+        {
+            Title = $"What's new: {what}", Width = 640, Height = 520, MinWidth = 420, MinHeight = 300,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner, Background = Look.Brush(Look.Panel),
+        };
+        var buttons = Row(Look.Secondary("Close", Look.Stop, () => dialog.Close()));
+        if (notes?.Url is { } url) buttons.Children.Insert(0, Look.Secondary("Open on GitHub", Look.Tag, () => Ui.Browse(url)));
+        var head = new StackPanel
+        {
+            Spacing = 4, Margin = new Thickness(0, 0, 0, 14),
+            Children =
+            {
+                new TextBlock { Text = notes?.Title ?? what, FontSize = 22, FontWeight = FontWeight.Bold, Foreground = Look.Brush(Look.Text), TextWrapping = TextWrapping.Wrap },
+                new TextBlock
+                {
+                    Text = notes?.Published is { } at ? at.ToLocalTime().ToString("d MMMM yyyy, HH:mm") : "", FontSize = 13,
+                    Foreground = Look.Brush(Look.Dim), IsVisible = notes?.Published != null,
+                },
+            },
+        };
+        var body = new ScrollViewer
+        {
+            Content = new SelectableTextBlock { Text = text, TextWrapping = TextWrapping.Wrap, FontSize = 14, LineHeight = 21, Foreground = Look.Brush(Look.Text) },
+        };
+        DockPanel.SetDock(head, Dock.Top);
+        DockPanel.SetDock(buttons, Dock.Bottom);
+        buttons.Margin = new Thickness(0, 14, 0, 0);
+        dialog.Content = new DockPanel { Margin = new Thickness(26), Children = { head, buttons, body } };
+        await dialog.ShowDialog(this);
+    }
+
+    static string Plain(string markdown)
+    {
+        var lines = markdown.Replace("\r\n", "\n").Split('\n').Select(line =>
+        {
+            var t = line.TrimEnd();
+            var trimmed = t.TrimStart();
+            if (trimmed.StartsWith('#')) t = trimmed.TrimStart('#').Trim();
+            else if (trimmed.StartsWith("- ") || trimmed.StartsWith("* ")) t = t[..(t.Length - trimmed.Length)] + "•  " + trimmed[2..];
+            return t.Replace("**", "").Replace("__", "").Replace("`", "");
+        });
+        return string.Join("\n", lines).Trim();
+    }
+
     Control Idle()
     {
         var modes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 0, 0, 6), Children = { modeBifrost, modeOfficial } };
@@ -255,7 +306,8 @@ public sealed class MainWindow : Window
         };
 
         var cards = new UniformGrid { Columns = 3, Margin = new Thickness(-8, 0) };
-        cards.Children.Add(Pad(Look.Card("Version", Look.Tag, versionValue, versionSub)));
+        cards.Children.Add(Pad(Look.Card("Version", Look.Tag, versionValue, versionSub,
+            Look.Link("What's new", Look.Logs, () => _ = ShowNotes(official ? Product.Official : Product.Bifrost)))));
         cards.Children.Add(Pad(Look.Card("Brawlhalla", Look.Folder, gameValue, gameSub,
             Look.Link("Open folder", Look.Folder, () => Ui.Open(game)))));
         cards.Children.Add(Pad(Look.Card("Recent runs", Look.Pulse, runsValue, runsSub,
@@ -309,7 +361,7 @@ public sealed class MainWindow : Window
                         Look.Secondary("Change", Look.Folder, () => _ = Locate()), Look.Secondary("Open", Look.Folder, () => Ui.Open(game)))),
                     Look.Card("Bifrost", Look.Tag, bifrost, bifrostSub, Row(remove)),
                     Look.Card("Official servers", Look.Tag, officialText, officialSub, Row(removeOfficial)),
-                    Look.Card("App", Look.Tag, appText, appSub),
+                    Look.Card("App", Look.Tag, appText, appSub, Row(Look.Secondary("What's new", Look.Logs, () => _ = ShowNotes(Product.App)))),
                     Look.Card("App data", Look.Folder, new TextBlock { Text = EngineKit.Home }, new TextBlock(),
                         Row(Look.Secondary("Open", Look.Folder, () => Ui.Open(EngineKit.Home)))),
                     Look.Card("Remove everything", Look.Trash, new TextBlock { Text = "Bifrost, its saves and its files" },
@@ -422,7 +474,8 @@ public sealed class MainWindow : Window
             Status("Ready to install", installed != null ? "Steam put Brawlhalla's own launcher back. Install Bifrost again."
                 : !supported ? "This Brawlhalla version isn't supported yet. Bifrost will update for it soon."
                 : have == null ? Releases.LatestUrl == null ? "This copy of the app has no release address."
-                    : checkedOnline ? "Can't reach the update server right now." : "Checking for the latest version..."
+                    : !checkedOnline ? "Checking for the latest version..."
+                    : Releases.Reached(Product.Bifrost) ? "No Bifrost release yet." : "Can't reach the update server right now."
                 : "", "Install", Look.Download, () => _ = Install());
             main.IsEnabled = have != null && supported && !running;
         }
@@ -456,7 +509,8 @@ public sealed class MainWindow : Window
         {
             Status("Official servers", latestOfficial == null
                     ? Releases.Repo(Product.Official) == null ? "This copy of the app has no Official release address."
-                    : checkedOnline ? "No Official release yet." : "Checking for the latest version..."
+                    : !checkedOnline ? "Checking for the latest version..."
+                    : Releases.Reached(Product.Official) ? "No Official release yet." : "Can't reach the update server right now."
                 : !supported ? "Official isn't available for this Brawlhalla version yet. It will update for it soon."
                 : "", "Install", Look.Download, () => _ = Install());
             main.IsEnabled = latestOfficial != null && supported && !running;
@@ -500,7 +554,7 @@ public sealed class MainWindow : Window
         runsSub.Text = runs == 0 ? "" : errors == 0 ? "No errors" : $"{errors} with errors";
     }
 
-    string? Have => latest?.Name ?? EngineKit.KitRelease(engine.Folder);
+    string? Have => latest?.Name;
 
     static string InstalledText(string? installed) =>
         installed is { Length: > 0 } ? installed : installed != null ? "Installed" : "Not installed";
