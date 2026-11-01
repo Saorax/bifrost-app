@@ -19,7 +19,7 @@ public sealed class LogsPage : UserControl
     {
         this.installLog = installLog;
         if (Docs(game) is { } docs) runDirs.AddRange(Sessions(docs));
-        if (game != null && Path.Combine(game, "bifrost-engine", "logs") is var engineLogs && Directory.Exists(engineLogs))
+        if (game != null && Path.Combine(EngineKit.EngineDir(game), "logs") is var engineLogs && Directory.Exists(engineLogs))
             runDirs.Add(("Engine and Official", engineLogs));
         runs.ItemsSource = runDirs.Select(r => r.Name).ToList();
         runs.SelectionChanged += (_, _) => FillFiles();
@@ -43,7 +43,7 @@ public sealed class LogsPage : UserControl
 
     public static string? Docs(string? game)
     {
-        var storage = game == null ? null : Path.Combine(game, "bifrost-engine", "storage");
+        var storage = game == null ? null : Path.Combine(EngineKit.EngineDir(game), "storage");
         return storage != null && Directory.Exists(storage)
             ? Directory.GetDirectories(storage).Select(d => Path.Combine(d, "Documents", "Bifrost")).FirstOrDefault(Directory.Exists)
             : null;

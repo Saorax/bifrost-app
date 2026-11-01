@@ -28,15 +28,58 @@ public sealed class EngineKit(Project project)
         catch (Exception) { return null; }
     }
 
-    static JsonNode? ReadMarker(string game)
+    static JsonNode? ReadJson(string path)
+    {
+        try { return File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path)) : null; }
+        catch (Exception) { return null; }
+    }
+
+    static JsonNode? ReadMarker(string game) => ReadJson(MarkerPath(game));
+
+    static string? LauncherTail(string game)
     {
         try
         {
-            var path = Path.Combine(game, Marker);
-            return File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path)) : null;
+            using var exe = File.OpenRead(Path.Combine(game, "Brawlhalla.exe"));
+            if (exe.Length < 9) return null;
+            var tail = new byte[8];
+            exe.Seek(-8, SeekOrigin.End);
+            exe.ReadExactly(tail);
+            if (System.Text.Encoding.ASCII.GetString(tail, 4, 4) != "BFEN") return null;
+            var size = BitConverter.ToInt32(tail, 0);
+            if (size <= 0 || size > exe.Length - 8) return null;
+            var text = new byte[size];
+            exe.Seek(-8 - size, SeekOrigin.End);
+            exe.ReadExactly(text);
+            return Path.GetFullPath(System.Text.Encoding.UTF8.GetString(text));
         }
         catch (Exception) { return null; }
     }
+
+    static bool SameFolder(string a, string b) =>
+        string.Equals(Path.GetFullPath(a).TrimEnd('\\', '/'), Path.GetFullPath(b).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
+
+    public static string EngineDir(string game)
+    {
+        if (LauncherTail(game) is { } tail) return tail;
+        if (ReadJson(Path.Combine(game, Marker)) is { } legacy)
+            return (string?)legacy["engine_dir"] is { Length: > 0 } dir ? Path.GetFullPath(dir) : Path.Combine(game, "bifrost-engine");
+        try
+        {
+            foreach (var line in File.ReadAllLines(Path.Combine(Home, "engines.txt")))
+            {
+                if (line.Trim() is not { Length: > 0 } folder) continue;
+                if ((string?)ReadJson(Path.Combine(folder, Marker))?["game"] is { } recorded && SameFolder(recorded, game))
+                    return Path.GetFullPath(folder);
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        return Path.Combine(game, "bifrost-engine");
+    }
+
+    static string MarkerPath(string game) =>
+        EngineDir(game) is var engine && !SameFolder(engine, Path.Combine(game, "bifrost-engine"))
+            ? Path.Combine(engine, Marker) : Path.Combine(game, Marker);
 
     static string FileSha256(string path)
     {
@@ -50,11 +93,11 @@ public sealed class EngineKit(Project project)
     public static string? OfficialInstalled(string game) =>
         ReadMarker(game)?["official"] is { } o && Has(game, Path.Combine("official", "game-dx11.hl")) ? (string?)o["version"] ?? "" : null;
 
-    static bool Has(string game, string file) => File.Exists(Path.Combine(game, "bifrost-engine", file));
+    static bool Has(string game, string file) => File.Exists(Path.Combine(EngineDir(game), file));
 
     public static bool EngineInstalled(string game) => ReadMarker(game) != null;
 
-    static string LegacyModeFile(string game) => Path.Combine(game, "bifrost-engine", "mode.txt");
+    static string LegacyModeFile(string game) => Path.Combine(EngineDir(game), "mode.txt");
 
     public static bool ReadOfficialMode(string game)
     {
@@ -69,7 +112,7 @@ public sealed class EngineKit(Project project)
         marker["mode"] = official ? "official" : "bifrost";
         try
         {
-            File.WriteAllText(Path.Combine(game, Marker), marker.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n");
+            File.WriteAllText(MarkerPath(game), marker.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n");
             File.Delete(LegacyModeFile(game));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
@@ -193,7 +236,7 @@ public sealed class EngineKit(Project project)
 
     public static void AddOwnServer(string game)
     {
-        var storage = Path.Combine(game, "bifrost-engine", "storage");
+        var storage = Path.Combine(EngineDir(game), "storage");
         var app = Directory.Exists(storage) ? Directory.GetDirectories(storage, "BhPort*").FirstOrDefault() : null;
         if (app == null) return;
         var path = Path.Combine(app, "Documents", "Bifrost", "bh-mod-settings.json");
