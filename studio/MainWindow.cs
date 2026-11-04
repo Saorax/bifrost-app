@@ -66,7 +66,7 @@ public sealed class MainWindow : Window
         appUpdate = Look.Secondary("App update available", Look.Download, () => _ = UpdateApp());
         modeBifrost = ModeButton("Bifrost", false);
         modeOfficial = ModeButton("Official servers", true);
-        official = project.Settings.Mode == "official";
+        official = project.Settings.Mode != "bifrost";
         appUpdate.IsVisible = false;
         appUpdate.HorizontalAlignment = HorizontalAlignment.Right;
         appUpdate.VerticalAlignment = VerticalAlignment.Top;
@@ -89,7 +89,7 @@ public sealed class MainWindow : Window
         Content = new Grid { ColumnDefinitions = new ColumnDefinitions("232,*"), Children = { Sidebar(), page } };
 
         game = GameFinder.Find(project.Settings);
-        if (game != null && project.Settings.Mode == null && EngineKit.ReadOfficialMode(game)) official = project.Settings.OfficialAccepted;
+        if (game != null && project.Settings.Mode == null && EngineKit.Installed(game) != null) official = EngineKit.ReadOfficialMode(game);
         PaintModes();
         LoadArt();
         Show("home");
@@ -168,7 +168,7 @@ public sealed class MainWindow : Window
 
     void PaintModes()
     {
-        foreach (var (b, on) in new[] { (modeBifrost, !official), (modeOfficial, official) })
+        foreach (var (b, on) in new[] { (modeOfficial, official), (modeBifrost, !official) })
         {
             b.Background = on ? Look.Bridge() : new SolidColorBrush(Color.FromArgb(110, 0, 0, 0));
             b.Opacity = on ? 1 : 0.8;
@@ -274,7 +274,7 @@ public sealed class MainWindow : Window
 
     Control Idle()
     {
-        var modes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 0, 0, 6), Children = { modeBifrost, modeOfficial } };
+        var modes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 0, 0, 6), Children = { modeOfficial, modeBifrost } };
         var words = new StackPanel
         {
             Spacing = 8, VerticalAlignment = VerticalAlignment.Bottom, HorizontalAlignment = HorizontalAlignment.Left,
@@ -643,6 +643,13 @@ public sealed class MainWindow : Window
         if (GameFinder.GameRunning()) { detail.Text = "Close Brawlhalla first."; return; }
         var isOfficial = official;
         if (isOfficial && latestOfficial == null) return;
+        if (isOfficial && !project.Settings.OfficialAccepted)
+        {
+            if (!await ConfirmOfficial()) return;
+            project.Settings.OfficialAccepted = true;
+            project.Settings.Mode = "official";
+            project.Settings.Save();
+        }
         var updating = isOfficial ? EngineKit.OfficialInstalled(game) != null : EngineKit.Installed(game) != null;
         working = true;
         cancel = new CancellationTokenSource();
