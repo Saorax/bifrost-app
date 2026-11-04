@@ -136,12 +136,21 @@ public sealed class MainWindow : Window
         };
         var repair = new MenuItem { Header = "Repair", Icon = Look.Icon(Look.Wrench, 14, Look.Text) };
         repair.Click += (_, _) => _ = Install(fresh: true);
+        var clean = new MenuItem { Header = "Clean rebuild", Icon = Look.Icon(Look.Refresh, 14, Look.Text) };
+        clean.Click += (_, _) => _ = CleanRebuild();
+        var original = new MenuItem { Header = "Use original game", Icon = Look.Icon(Look.Folder, 14, Look.Text) };
+        original.Click += (_, _) => _ = SwapLauncher(original: true);
         var folder = new MenuItem { Header = "Open game folder", Icon = Look.Icon(Look.Folder, 14, Look.Text) };
         folder.Click += (_, _) => Ui.Open(game);
         var logs = new MenuItem { Header = "View logs", Icon = Look.Icon(Look.Logs, 14, Look.Text) };
         logs.Click += (_, _) => Show("logs");
-        var flyout = new MenuFlyout { Placement = PlacementMode.TopEdgeAlignedRight, Items = { repair, folder, logs } };
-        flyout.Opening += (_, _) => repair.IsEnabled = game != null && EngineKit.Installed(game) != null && !working;
+        var flyout = new MenuFlyout { Placement = PlacementMode.TopEdgeAlignedRight, Items = { repair, clean, original, folder, logs } };
+        flyout.Opening += (_, _) =>
+        {
+            repair.IsEnabled = game != null && EngineKit.Installed(game) != null && !working;
+            clean.IsEnabled = game != null && !working && (official ? latestOfficial != null : latest != null);
+            original.IsEnabled = game != null && !working && EngineKit.Installed(game) != null && !EngineKit.Original(game);
+        };
         b.Flyout = flyout;
         return b;
     }
@@ -358,7 +367,8 @@ public sealed class MainWindow : Window
                 {
                     new TextBlock { Text = "Settings", FontSize = 30, FontWeight = FontWeight.Bold, Foreground = Look.Brush(Look.Text) },
                     Look.Card("Brawlhalla", Look.Folder, new TextBlock { Text = game ?? "Not found" }, new TextBlock(), Row(
-                        Look.Secondary("Change", Look.Folder, () => _ = Locate()), Look.Secondary("Open", Look.Folder, () => Ui.Open(game)))),
+                        Look.Secondary("Change", Look.Folder, () => _ = Locate()), Look.Secondary("Open", Look.Folder, () => Ui.Open(game)),
+                        Look.Secondary("Use original game", Look.Folder, () => _ = SwapLauncher(original: true)))),
                     Look.Card("Bifrost", Look.Tag, bifrost, bifrostSub, Row(remove)),
                     Look.Card("Official servers", Look.Tag, officialText, officialSub, Row(removeOfficial)),
                     Look.Card("App", Look.Tag, appText, appSub, Row(Look.Secondary("What's new", Look.Logs, () => _ = ShowNotes(Product.App)))),
@@ -487,6 +497,12 @@ public sealed class MainWindow : Window
             Status("Brawlhalla not found", "Install it from Steam, or show where it is.", "Locate", Look.Folder, () => _ = Locate());
             main.IsEnabled = true;
         }
+        else if (installed != null && EngineKit.Original(game))
+        {
+            Status("Original game", "Brawlhalla.exe is Steam's own. Bifrost is still built: Use Bifrost switches back in seconds.",
+                "Use Bifrost", Look.Play, () => _ = SwapLauncher(original: false));
+            main.IsEnabled = !running;
+        }
         else if (installed == null || !EngineKit.LauncherOk(game))
         {
             Status("Ready to install", installed != null ? "Steam put Brawlhalla's own launcher back. Install Bifrost again."
@@ -525,7 +541,13 @@ public sealed class MainWindow : Window
         var waitingFor = "Brawlhalla was updated: Official will update for it soon.";
         var oldKit = installed != null && EngineKit.OfficialOnOldKit(game!);
         main.IsEnabled = !running;
-        if (installed == null || !EngineKit.LauncherOk(game!))
+        if (installed != null && EngineKit.Original(game!))
+        {
+            Status("Original game", "Brawlhalla.exe is Steam's own. Official is still built: Use Official switches back in seconds.",
+                "Use Official", Look.Play, () => _ = SwapLauncher(original: false));
+            main.IsEnabled = !running;
+        }
+        else if (installed == null || !EngineKit.LauncherOk(game!))
         {
             Status("Official servers", latestOfficial == null
                     ? Releases.Repo(Product.Official) == null ? "This copy of the app has no Official release address."
@@ -594,6 +616,26 @@ public sealed class MainWindow : Window
         mainAction = action;
     }
 
+
+    async Task CleanRebuild()
+    {
+        if (game == null || working) return;
+        if (GameFinder.GameRunning()) { detail.Text = "Close Brawlhalla first."; return; }
+        var serverWasRunning = HostedServer.Running;
+        try
+        {
+            if (serverWasRunning) await HostedServer.StopAsync();
+            await Task.Run(() => EngineKit.Clean(kit: latest != null, officialLayer: official && latestOfficial != null));
+            log.Append("Clean rebuild: removed the work folder and the downloaded files; downloading and building again.");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            detail.Text = $"Couldn't clear Bifrost's files: {e.Message} Close anything started from the app and try again.";
+            return;
+        }
+        await Install(fresh: true);
+        if (serverWasRunning && engine.Python is { } python && !HostedServer.Running) HostedServer.Start(python);
+    }
 
     async Task Install(bool fresh = false)
     {
@@ -711,6 +753,31 @@ public sealed class MainWindow : Window
             Refresh();
             Show("home");
             Notify("Bifrost removed", "Brawlhalla is back to Steam's own game. Your saves are kept.", NotificationType.Information);
+        }
+    }
+
+    async Task SwapLauncher(bool original)
+    {
+        if (game == null || working || EngineKit.Installed(game) == null) return;
+        if (GameFinder.GameRunning()) { detail.Text = "Close Brawlhalla first."; return; }
+        working = true;
+        try
+        {
+            await engine.SwapLauncherAsync(game, original, log.Append);
+            Notify(original ? "Original game" : official ? "Official" : "Bifrost",
+                original ? "Brawlhalla.exe is Steam's own again. Bifrost and Official stay built for when you switch back."
+                    : "Brawlhalla.exe starts " + (official ? "Official" : "Bifrost") + " again.", NotificationType.Information);
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
+        {
+            log.Append(e.Message);
+            detail.Text = e.Message;
+        }
+        finally
+        {
+            working = false;
+            Refresh();
+            Show("home");
         }
     }
 

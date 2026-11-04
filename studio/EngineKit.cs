@@ -15,6 +15,27 @@ public sealed class EngineKit(Project project)
     static string OfficialLayer => Path.Combine(Home, "official");
     static string Work => Path.Combine(Home, "engine-work");
 
+    public static void Clean(bool kit, bool officialLayer)
+    {
+        foreach (var dir in new[] { Work, kit ? Downloaded : null, officialLayer ? OfficialLayer : null })
+            if (dir != null && Directory.Exists(dir)) DeleteTree(dir);
+    }
+
+    static void DeleteTree(string dir)
+    {
+        foreach (var sub in Directory.GetDirectories(dir))
+        {
+            if (new DirectoryInfo(sub).Attributes.HasFlag(FileAttributes.ReparsePoint)) Directory.Delete(sub);
+            else DeleteTree(sub);
+        }
+        foreach (var file in Directory.GetFiles(dir))
+        {
+            File.SetAttributes(file, FileAttributes.Normal);
+            File.Delete(file);
+        }
+        Directory.Delete(dir);
+    }
+
     string? lastFailure;
 
     public string? Folder => File.Exists(Path.Combine(Downloaded, "player_engine.py")) ? Downloaded : null;
@@ -247,6 +268,20 @@ public sealed class EngineKit(Project project)
             File.WriteAllText(path, settings.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception e) when (e is IOException or System.Text.Json.JsonException or UnauthorizedAccessException or InvalidOperationException) { }
+    }
+
+    public static bool Original(string game)
+    {
+        try { return ReadMarker(game)?["original"]?.GetValue<bool>() == true; }
+        catch (Exception) { return false; }
+    }
+
+    public async Task SwapLauncherAsync(string game, bool original, Action<string> log)
+    {
+        var kit = Folder ?? throw new InvalidOperationException("Bifrost's files are missing.");
+        string[] args = [original ? "original" : "launcher", "--game", game, "--work", Work];
+        if (await RunDriverAsync(kit, args, log, CancellationToken.None) != 0)
+            throw new InvalidOperationException(lastFailure ?? "Couldn't swap Brawlhalla.exe.");
     }
 
     public async Task RemoveAsync(string game, Action<string> log, bool purge = false)
