@@ -8,9 +8,11 @@ public enum Product { App, Bifrost, Official }
 public sealed record Asset(string Name, string Url, long Size, string Sha256);
 
 public sealed record Release(string Name, string Game, string Server, Asset Kit, Asset? ServerPackage, Asset? App,
-                             string? SwfSha256 = null, string? GameFiles = null, string? PortCommit = null);
+                             string? SwfSha256 = null, string? GameFiles = null, string? PortCommit = null,
+                             IReadOnlyDictionary<string, string>? GameFileList = null);
 
-public sealed record OfficialRelease(string Name, Asset Package, string? GameFiles, string? PortCommit);
+public sealed record OfficialRelease(string Name, Asset Package, string? GameFiles, string? PortCommit,
+                                     IReadOnlyDictionary<string, string>? GameFileList = null);
 
 public sealed record AppRelease(string Name, Asset Exe);
 
@@ -88,6 +90,9 @@ public static class Releases
         node?["asset"] is { } name && urls.TryGetValue((string)name!, out var u)
             ? new Asset((string)name!, u, (long)node["size"]!, (string)node["sha256"]!) : null;
 
+    static Dictionary<string, string>? FileList(JsonNode? node) =>
+        node is JsonObject list ? list.Where(kv => kv.Value != null).ToDictionary(kv => kv.Key, kv => (string)kv.Value!) : null;
+
     public static async Task<Release?> LatestAsync()
     {
         if (await LatestManifestAsync(Product.Bifrost) is not var (m, urls)) return null;
@@ -96,7 +101,8 @@ public static class Releases
             var kit = Read(m, urls);
             return kit == null ? null
                 : new Release((string)m["release"]!, (string)m["game"]!, (string)m["server"]!, kit, Read(m["server_package"], urls),
-                    Read(m["app"], urls), (string?)m["swf_sha256"], (string?)m["game_files"], (string?)m["port_commit"]);
+                    Read(m["app"], urls), (string?)m["swf_sha256"], (string?)m["game_files"], (string?)m["port_commit"],
+                    FileList(m["game_file_list"]));
         }
         catch (Exception e) when (e is NullReferenceException or InvalidOperationException or FormatException) { return null; }
     }
@@ -107,7 +113,8 @@ public static class Releases
         try
         {
             return Read(m, urls) is { } package
-                ? new OfficialRelease((string)m["release"]!, package, (string?)m["game_files"], (string?)m["port_commit"]) : null;
+                ? new OfficialRelease((string)m["release"]!, package, (string?)m["game_files"], (string?)m["port_commit"],
+                    FileList(m["game_file_list"])) : null;
         }
         catch (Exception e) when (e is NullReferenceException or InvalidOperationException or FormatException) { return null; }
     }

@@ -491,6 +491,7 @@ public sealed class MainWindow : Window
         var installed = game == null ? null : EngineKit.Installed(game);
         var have = Have;
         var supported = game != null && EngineKit.GameMatches(game, latest);
+        var filesNote = CheckFiles(latest?.GameFileList);
         main.IsEnabled = !running;
         if (game == null)
         {
@@ -506,7 +507,7 @@ public sealed class MainWindow : Window
         else if (installed == null || !EngineKit.LauncherOk(game))
         {
             Status("Ready to install", installed != null ? "Steam put Brawlhalla's own launcher back. Install Bifrost again."
-                : !supported ? "This Brawlhalla version isn't supported yet. Bifrost will update for it soon."
+                : !supported ? filesNote ?? "This Brawlhalla version isn't supported yet. Bifrost will update for it soon."
                 : have == null ? Releases.LatestUrl == null ? "This copy of the app has no release address."
                     : !checkedOnline ? "Checking for the latest version..."
                     : Releases.Reached(Product.Bifrost) ? "No Bifrost release yet." : "Can't reach the update server right now."
@@ -516,7 +517,7 @@ public sealed class MainWindow : Window
         else if (have != null && installed != have)
         {
             Status("Update available", supported ? $"Bifrost {have} is ready."
-                : "Brawlhalla was updated: Bifrost will update for it soon.", "Update", Look.Refresh, () => _ = Install());
+                : filesNote ?? "Brawlhalla was updated: Bifrost will update for it soon.", "Update", Look.Refresh, () => _ = Install());
             main.IsEnabled = supported && !running;
         }
         else if (!EngineKit.InstalledGameMatches(game, false))
@@ -533,12 +534,24 @@ public sealed class MainWindow : Window
         Cards(installed, have, supported);
     }
 
+    string? lastFilesNote;
+
+    string? CheckFiles(IReadOnlyDictionary<string, string>? list)
+    {
+        var note = EngineKit.FilesNote(game, list);
+        if (note != null && note != lastFilesNote) log.Append(note);
+        lastFilesNote = note;
+        return note;
+    }
+
     void RefreshOfficial(bool running)
     {
         var installed = EngineKit.OfficialInstalled(game!);
         var have = latestOfficial?.Name;
         var supported = EngineKit.OfficialMatches(game!, latestOfficial);
-        var waitingFor = "Brawlhalla was updated: Official will update for it soon.";
+        var waitingFor = (supported ? null : CheckFiles(latestOfficial?.GameFileList))
+                         ?? "Brawlhalla was updated: Official will update for it soon.";
+        if (supported) CheckFiles(latestOfficial?.GameFileList);
         var oldKit = installed != null && EngineKit.OfficialOnOldKit(game!);
         main.IsEnabled = !running;
         if (installed != null && EngineKit.Original(game!))

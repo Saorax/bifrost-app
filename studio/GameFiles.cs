@@ -14,6 +14,7 @@ public static class GameFiles
     static readonly object Gate = new();
     static Dictionary<string, Entry>? cache;
     static string? lastGame, lastStamp, lastFingerprint;
+    static SortedDictionary<string, string>? lastListing;
 
     static string CachePath => Path.Combine(EngineKit.Home, "game-files-cache.json");
 
@@ -46,6 +47,39 @@ public static class GameFiles
 
     public static string? Fingerprint(string? game)
     {
+        lock (Gate)
+        {
+            if (Listing(game) is not { } listing) return null;
+            if (listing == lastListing && lastFingerprint != null) return lastFingerprint;
+            var lines = new StringBuilder();
+            foreach (var (name, sha) in listing) lines.Append(name).Append('\t').Append(sha).Append('\n');
+            lastFingerprint = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(lines.ToString())));
+            return lastFingerprint;
+        }
+    }
+
+    public static List<string>? Differences(string? game, IReadOnlyDictionary<string, string> want)
+    {
+        if (Listing(game) is not { } listing) return null;
+        var have = new Dictionary<string, string>(listing, StringComparer.OrdinalIgnoreCase);
+        var differ = new List<string>();
+        foreach (var (name, sha) in want)
+            if (!have.TryGetValue(name, out var found)) differ.Add(name + " (missing)");
+            else if (found != sha) differ.Add(name);
+        return differ;
+    }
+
+    public static bool Core(string name)
+    {
+        var n = name.Replace(" (missing)", "");
+        return n.Equals("BrawlhallaAir.swf", StringComparison.OrdinalIgnoreCase) || n.EndsWith(".swz", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static string Describe(IReadOnlyList<string> names, int shown = 3) =>
+        string.Join(", ", names.Take(shown)) + (names.Count > shown ? $" and {names.Count - shown} more" : "");
+
+    static SortedDictionary<string, string>? Listing(string? game)
+    {
         if (game == null || !Directory.Exists(game)) return null;
         lock (Gate)
         {
@@ -60,9 +94,9 @@ public static class GameFiles
                     stamp.Append(name).Append('|').Append(info.Length).Append('|').Append(info.LastWriteTimeUtc.Ticks).Append('\n');
                 }
                 var stampText = stamp.ToString();
-                if (game == lastGame && stampText == lastStamp) return lastFingerprint;
+                if (game == lastGame && stampText == lastStamp && lastListing != null) return lastListing;
                 cache ??= Load();
-                var lines = new StringBuilder();
+                var listing = new SortedDictionary<string, string>(files.Comparer);
                 var changed = false;
                 foreach (var (name, path) in files)
                 {
@@ -74,13 +108,14 @@ public static class GameFiles
                         cache[path] = e;
                         changed = true;
                     }
-                    lines.Append(name).Append('\t').Append(e.Sha256).Append('\n');
+                    listing[name] = e.Sha256;
                 }
                 if (changed) Save(cache);
                 lastGame = game;
                 lastStamp = stampText;
-                lastFingerprint = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(lines.ToString())));
-                return lastFingerprint;
+                lastListing = listing;
+                lastFingerprint = null;
+                return listing;
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
         }

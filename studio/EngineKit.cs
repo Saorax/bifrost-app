@@ -154,6 +154,7 @@ public sealed class EngineKit(Project project)
 
     public static bool GameMatches(string game, Release? release)
     {
+        if (release?.GameFileList is { } list) return GameFiles.Differences(game, list) is { } d && !d.Any(GameFiles.Core);
         if (release?.GameFiles is { } files) return GameFiles.Fingerprint(game) == files;
         if (release?.SwfSha256 is not { } want) return true;
         try
@@ -171,7 +172,23 @@ public sealed class EngineKit(Project project)
     }
 
     public static bool OfficialMatches(string game, OfficialRelease? official) =>
-        official != null && official.GameFiles != null && GameFiles.Fingerprint(game) == official.GameFiles;
+        official?.GameFileList is { } list ? GameFiles.Differences(game, list) is { } d && !d.Any(GameFiles.Core)
+            : official != null && official.GameFiles != null && GameFiles.Fingerprint(game) == official.GameFiles;
+
+    public static string? FilesNote(string? game, IReadOnlyDictionary<string, string>? list)
+    {
+        if (game == null || list == null) return null;
+        if (GameFiles.Differences(game, list) is not { } differ)
+            return "Can't read Brawlhalla's files: close anything that has them open (or an antivirus scan) and try again.";
+        var core = differ.Where(GameFiles.Core).ToList();
+        if (core.Count > 0)
+            return $"Brawlhalla's game code isn't the version this release is for (changed: {GameFiles.Describe(core)}). "
+                   + "If Steam just updated, a new release comes soon; if not, verify the game files in Steam.";
+        return differ.Count > 0
+            ? $"Not Steam's current files: {GameFiles.Describe(differ)} (a mod, or a skipped Steam update). "
+              + "The build doesn't use them; if they look wrong in game, verify the game files in Steam."
+            : null;
+    }
 
     public static bool OfficialOnOldKit(string game) =>
         OfficialInstalled(game) != null && (string?)ReadMarker(game)?["official"]?["kit"] != KitRelease(Downloaded);
@@ -211,6 +228,7 @@ public sealed class EngineKit(Project project)
                                            Action unpacking, Action<int> step, Action<string> line, CancellationToken cancel,
                                            bool fresh = false)
     {
+        if (FilesNote(game, official.GameFileList) is { } note) line(note);
         if (!OfficialMatches(game, official))
             throw new InvalidOperationException("Official isn't available for this Brawlhalla version yet. It will update for it soon.");
         if (DownloadSize(kitRelease) > 0) await EnsureAsync(kitRelease!.Kit, Downloaded, download, unpacking, cancel);
@@ -235,6 +253,7 @@ public sealed class EngineKit(Project project)
     public async Task InstallAsync(string game, Release? release, Action<double, double, long> download, Action unpacking,
                                    Action<int> step, Action<string> line, CancellationToken cancel, bool fresh = false)
     {
+        if (FilesNote(game, release?.GameFileList) is { } note) line(note);
         if (!GameMatches(game, release))
             throw new InvalidOperationException("This Brawlhalla version isn't supported yet. Bifrost will update for it soon.");
         if (DownloadSize(release) > 0) await EnsureAsync(release!.Kit, Downloaded, download, unpacking, cancel);
