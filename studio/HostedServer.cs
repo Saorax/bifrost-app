@@ -17,6 +17,15 @@ public static class HostedServer
 
     public static bool Downloaded => File.Exists(Path.Combine(Folder, "bh_server", "__main__.py"));
 
+    static string PackageFile => Path.Combine(Folder, ".package");
+
+    public static bool UpdateAvailable(Asset? package)
+    {
+        if (package == null || !Downloaded) return false;
+        try { return File.ReadAllText(PackageFile).Trim() != package.Sha256; }
+        catch (Exception) { return true; }
+    }
+
     public static string? Version
     {
         get
@@ -52,6 +61,15 @@ public static class HostedServer
         Directory.CreateDirectory(Folder);
         await Task.Run(() => ZipFile.ExtractToDirectory(zip, Folder, overwriteFiles: true));
         File.Delete(zip);
+        File.WriteAllText(PackageFile, package.Sha256);
+    }
+
+    public static async Task UpdateAsync(Asset package, string? python, IProgress<double> progress)
+    {
+        var restart = Running;
+        if (restart) await StopAsync();
+        try { await DownloadAsync(package, progress); }
+        finally { if (restart && python != null) Start(python); }
     }
 
     static bool WrapperRunning

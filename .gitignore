@@ -1,6 +1,7 @@
 bin/
 obj/
 build/
+data/
 .vs/
 *.user
 __pycache__/

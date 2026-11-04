@@ -118,12 +118,6 @@ public sealed class EngineKit(Project project)
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
-    public static string? KitPortCommit(string? kit)
-    {
-        try { return kit == null ? null : (string?)JsonNode.Parse(File.ReadAllText(Path.Combine(kit, "kit.json")))?["port_commit"]; }
-        catch (Exception) { return null; }
-    }
-
     public static bool LauncherOk(string game)
     {
         try
@@ -155,12 +149,11 @@ public sealed class EngineKit(Project project)
         return want == null || GameFiles.Fingerprint(game) == want;
     }
 
-    static bool SameCommit(string? a, string? b) =>
-        a == null || b == null || a.StartsWith(b, StringComparison.OrdinalIgnoreCase) || b.StartsWith(a, StringComparison.OrdinalIgnoreCase);
+    public static bool OfficialMatches(string game, OfficialRelease? official) =>
+        official != null && official.GameFiles != null && GameFiles.Fingerprint(game) == official.GameFiles;
 
-    public bool OfficialMatches(string game, OfficialRelease? official, Release? kitRelease) =>
-        official != null && official.GameFiles != null && GameFiles.Fingerprint(game) == official.GameFiles
-        && SameCommit(official.PortCommit, kitRelease?.PortCommit ?? KitPortCommit(Folder));
+    public static bool OfficialOnOldKit(string game) =>
+        OfficialInstalled(game) != null && (string?)ReadMarker(game)?["official"]?["kit"] != KitRelease(Downloaded);
 
     async Task EnsureAsync(Asset? asset, string folder, Action<double, double, long> download, Action unpacking, CancellationToken cancel)
     {
@@ -197,7 +190,7 @@ public sealed class EngineKit(Project project)
                                            Action unpacking, Action<int> step, Action<string> line, CancellationToken cancel,
                                            bool fresh = false)
     {
-        if (!OfficialMatches(game, official, kitRelease))
+        if (!OfficialMatches(game, official))
             throw new InvalidOperationException("Official isn't available for this Brawlhalla version yet. It will update for it soon.");
         if (DownloadSize(kitRelease) > 0) await EnsureAsync(kitRelease!.Kit, Downloaded, download, unpacking, cancel);
         if (OfficialLayerRelease() != official.Name) await EnsureAsync(official.Package, OfficialLayer, download, unpacking, cancel);

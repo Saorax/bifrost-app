@@ -433,6 +433,24 @@ public sealed class MainWindow : Window
         checkedOnline = true;
         await CheckApp();
         Refresh();
+        await UpdateServer();
+    }
+
+    async Task UpdateServer()
+    {
+        if (working || latest?.ServerPackage is not { } package || !HostedServer.UpdateAvailable(package)) return;
+        if (engine.Python is not { } python) return;
+        if (HostedServer.Running && (await ServerStatus.FetchAsync(HostedServer.Address))?.Players is not 0) return;
+        try
+        {
+            await HostedServer.UpdateAsync(package, python, new Progress<double>());
+            if (game is { } g) EngineKit.AddOwnServer(g);
+            Notify("Server updated", $"Your server now runs Bifrost {latest.Name}'s version.", NotificationType.Information);
+        }
+        catch (Exception e) when (e is IOException or HttpRequestException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            log.Append($"Server update: {e.Message}");
+        }
     }
 
     async Task CheckApp()
@@ -503,7 +521,9 @@ public sealed class MainWindow : Window
     {
         var installed = EngineKit.OfficialInstalled(game!);
         var have = latestOfficial?.Name;
-        var supported = engine.OfficialMatches(game!, latestOfficial, latest);
+        var supported = EngineKit.OfficialMatches(game!, latestOfficial);
+        var waitingFor = "Brawlhalla was updated: Official will update for it soon.";
+        var oldKit = installed != null && EngineKit.OfficialOnOldKit(game!);
         main.IsEnabled = !running;
         if (installed == null || !EngineKit.LauncherOk(game!))
         {
@@ -511,7 +531,7 @@ public sealed class MainWindow : Window
                     ? Releases.Repo(Product.Official) == null ? "This copy of the app has no Official release address."
                     : !checkedOnline ? "Checking for the latest version..."
                     : Releases.Reached(Product.Official) ? "No Official release yet." : "Can't reach the update server right now."
-                : !supported ? "Official isn't available for this Brawlhalla version yet. It will update for it soon."
+                : !supported ? waitingFor
                 : "", "Install", Look.Download, () => _ = Install());
             main.IsEnabled = latestOfficial != null && supported && !running;
         }
@@ -522,10 +542,10 @@ public sealed class MainWindow : Window
             Status("Updating", $"Official {have} is ready for this Brawlhalla version.", "Update", Look.Refresh, () => _ = Install());
             Dispatcher.UIThread.Post(() => _ = Install());
         }
-        else if (have != null && installed != have)
+        else if (have != null && (installed != have || oldKit))
         {
-            Status("Update available", supported ? $"Official {have} is ready."
-                : "Brawlhalla was updated: Official will update for it soon.", "Update", Look.Refresh, () => _ = Install());
+            Status("Update available", !supported ? waitingFor : installed != have ? $"Official {have} is ready."
+                : "Bifrost was updated: Update rebuilds Official on its new engine.", "Update", Look.Refresh, () => _ = Install());
             main.IsEnabled = supported && !running;
         }
         else if (!EngineKit.InstalledGameMatches(game!, true))

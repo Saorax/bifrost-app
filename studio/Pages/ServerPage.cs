@@ -65,6 +65,9 @@ public sealed class ServerPage : UserControl
         addresses.IsVisible = running;
         if (running && DateTime.Now - addressesAt > TimeSpan.FromMinutes(1)) _ = ShowAddresses();
         if (!running) addressesAt = DateTime.MinValue;
+        var newer = HostedServer.UpdateAvailable(release()?.ServerPackage);
+        if (newer) hostSub.Text = taken ? "Another program uses this port. A server update is ready." : "A server update is ready.";
+        if (running && newer) buttons.Children.Add(Look.Secondary("Update", Look.Refresh, () => _ = Download()));
         if (running) buttons.Children.Add(Look.Secondary("Stop", Look.Stop, () => _ = Act(HostedServer.StopAsync)));
         else
         {
@@ -174,7 +177,7 @@ public sealed class ServerPage : UserControl
         download.IsVisible = true;
         await Act(async () =>
         {
-            await HostedServer.DownloadAsync(package, new Progress<double>(p => download.Value = p));
+            await HostedServer.UpdateAsync(package, engine.Python, new Progress<double>(p => download.Value = p));
             if (game() is { } g) EngineKit.AddOwnServer(g);
         });
         download.IsVisible = false;
