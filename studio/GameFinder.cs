@@ -70,10 +70,19 @@ public static class GameFinder
     public static bool GameRunning() =>
         new[] { "Brawlhalla", "hl", "bifrost-vulkan" }.Any(n => System.Diagnostics.Process.GetProcessesByName(n).Length > 0);
 
+    public const string LauncherAside = "Brawlhalla.exe.bifrost-launcher";
+
+    static void RestoreLauncher(string game)
+    {
+        var aside = Path.Combine(game, LauncherAside);
+        if (File.Exists(aside) && !GameRunning()) File.Move(aside, Path.Combine(game, "Brawlhalla.exe"), true);
+    }
+
     public static void Play(string? game)
     {
         try
         {
+            if (game != null) RestoreLauncher(game);
             var exe = game == null ? null : Path.Combine(game, "Brawlhalla.exe");
             if (exe != null && File.Exists(exe) && !IsSteamInstall(game))
             {

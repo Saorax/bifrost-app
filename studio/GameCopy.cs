@@ -5,7 +5,7 @@ public static class GameCopy
     const string Backup = ".bifrost-original";
     const string Exe = "Brawlhalla.exe";
 
-    static readonly string[] Skipped = [EngineKit.Marker, "steam_appid.txt"];
+    static readonly string[] Skipped = [EngineKit.Marker, "steam_appid.txt", GameFinder.LauncherAside];
 
     public static Task MakeAsync(string steam, string target, Action<double> progress, CancellationToken cancel) =>
         Task.Run(() => Mirror(steam, target, progress, cancel), cancel);
