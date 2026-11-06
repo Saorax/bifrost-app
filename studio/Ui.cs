@@ -127,6 +127,21 @@ public static class Ui
         catch (Exception) { }
     }
 
+    public static void Reveal(string file)
+    {
+        if (!File.Exists(file)) return;
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+        {
+            Open(Path.GetDirectoryName(file));
+            return;
+        }
+        var start = OperatingSystem.IsWindows()
+            ? new System.Diagnostics.ProcessStartInfo("explorer", $"/select,\"{file}\"")
+            : new System.Diagnostics.ProcessStartInfo("open", ["-R", file]);
+        try { System.Diagnostics.Process.Start(start)?.Dispose(); }
+        catch (Exception) { }
+    }
+
     public static void Browse(string? url)
     {
         if (url == null || !url.StartsWith("https://", StringComparison.Ordinal)) return;
