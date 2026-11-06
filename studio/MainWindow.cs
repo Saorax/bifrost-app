@@ -368,7 +368,8 @@ public sealed class MainWindow : Window
                     new TextBlock { Text = "Settings", FontSize = 30, FontWeight = FontWeight.Bold, Foreground = Look.Brush(Look.Text) },
                     Look.Card("Brawlhalla", Look.Folder, new TextBlock { Text = game ?? "Not found" }, new TextBlock(), Row(
                         Look.Secondary("Change", Look.Folder, () => _ = Locate()), Look.Secondary("Open", Look.Folder, () => Ui.Open(game)),
-                        Look.Secondary("Use original game", Look.Folder, () => _ = SwapLauncher(original: true)))),
+                        Look.Secondary("Use original game", Look.Folder, () => _ = SwapLauncher(original: true)),
+                        Look.Secondary(GameFinder.IsSteamInstall(game) ? "Separate copy" : "Update from Steam", Look.Download, () => _ = CopyFromSteam()))),
                     Look.Card("Bifrost", Look.Tag, bifrost, bifrostSub, Row(remove)),
                     Look.Card("Official servers", Look.Tag, officialText, officialSub, Row(removeOfficial)),
                     Look.Card("App", Look.Tag, appText, appSub, Row(Look.Secondary("What's new", Look.Logs, () => _ = ShowNotes(Product.App)))),
@@ -523,11 +524,11 @@ public sealed class MainWindow : Window
         else if (!EngineKit.InstalledGameMatches(game, false))
         {
             Status("Waiting for an update", "Steam updated Brawlhalla. Bifrost will update for it soon; until then Play offers Brawlhalla's own game.",
-                "Play", Look.Play, GameFinder.Play);
+                "Play", Look.Play, () => GameFinder.Play(game));
         }
         else
         {
-            Status(running ? "Playing" : "Ready to play", running ? "" : "Everything is up to date.", "Play", Look.Play, GameFinder.Play);
+            Status(running ? "Playing" : "Ready to play", running ? "" : "Everything is up to date.", "Play", Look.Play, () => GameFinder.Play(game));
         }
         if (running && title.Text is "Ready to install" or "Update available") detail.Text = "Close Brawlhalla first.";
         tag.Text = installed is { Length: > 0 } ? installed : have ?? "Bifrost";
@@ -586,11 +587,11 @@ public sealed class MainWindow : Window
         else if (!EngineKit.InstalledGameMatches(game!, true))
         {
             Status("Waiting for an update", "Steam updated Brawlhalla. Until Official updates for it, Play starts Brawlhalla's own game.",
-                "Play", Look.Play, GameFinder.Play);
+                "Play", Look.Play, () => GameFinder.Play(game));
         }
         else
         {
-            Status(running ? "Playing" : "Ready to play", running ? "" : "Everything is up to date.", "Play", Look.Play, GameFinder.Play);
+            Status(running ? "Playing" : "Ready to play", running ? "" : "Everything is up to date.", "Play", Look.Play, () => GameFinder.Play(game));
         }
         if (running && title.Text is "Official servers" or "Update available") detail.Text = "Close Brawlhalla first.";
         tag.Text = installed is { Length: > 0 } ? $"Official {installed}" : have != null ? $"Official {have}" : "Official";
@@ -848,11 +849,69 @@ public sealed class MainWindow : Window
     {
         var picked = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Brawlhalla's folder" });
         var path = picked.FirstOrDefault()?.TryGetLocalPath();
-        if (!GameFinder.IsGame(path)) return;
+        if (path == null) return;
+        if (!GameFinder.IsGame(path))
+        {
+            Notify("Not Brawlhalla's folder", $"{path} has no BrawlhallaAir.swf. Pick the folder that holds the game's files.", NotificationType.Warning);
+            return;
+        }
+        UseFolder(path);
+    }
+
+    void UseFolder(string path)
+    {
         project.Settings.GameFolder = path;
         project.Settings.Save();
         game = path;
         LoadArt();
         Refresh();
+    }
+
+    async Task CopyFromSteam()
+    {
+        if (working || GameFinder.SteamInstall() is not { } steam) return;
+        if (GameFinder.GameRunning()) { detail.Text = "Close Brawlhalla first."; return; }
+        var target = game;
+        if (GameFinder.IsSteamInstall(target))
+        {
+            var picked = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Folder for the separate copy" });
+            if (picked.FirstOrDefault()?.TryGetLocalPath() is not { } folder) return;
+            target = !Directory.EnumerateFileSystemEntries(folder).Any() || GameFinder.IsGame(folder) ? folder : Path.Combine(folder, "Brawlhalla");
+            if (GameFinder.IsSteamInstall(target))
+            {
+                Notify("Pick another folder", "That is Steam's own copy of the game.", NotificationType.Warning);
+                return;
+            }
+        }
+        var from = game ?? steam;
+        working = true;
+        Show("home");
+        title.Text = "Copying Brawlhalla";
+        main.IsEnabled = false;
+        var failed = false;
+        try
+        {
+            await GameCopy.MakeAsync(steam, target!, p => Dispatcher.UIThread.Post(() => detail.Text = $"{p:P0} of {steam}"), CancellationToken.None);
+            GameCopy.CarrySaves(from, target!);
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            failed = true;
+            log.Append(e.Message);
+            Notify("The copy didn't finish", e.Message, NotificationType.Error);
+        }
+        finally
+        {
+            working = false;
+        }
+        if (failed)
+        {
+            Refresh();
+            return;
+        }
+        UseFolder(target!);
+        Show("home");
+        Notify("Separate copy ready", "Steam's updates won't change this copy. Install Bifrost or Official on it; Update from Steam in Settings brings it up to date.",
+            NotificationType.Information);
     }
 }

@@ -4,7 +4,19 @@ public static class GameFinder
 {
     public const string SteamAppId = "291550";
 
-    public static List<string> FindAll()
+    public static List<string> FindAll() =>
+        SteamLibraries().Select(l => Path.Combine(l, "steamapps", "common", "Brawlhalla"))
+            .Where(IsGame).Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    public static bool IsSteamInstall(string? dir) =>
+        dir != null && SteamLibraries().Any(l =>
+            File.Exists(Path.Combine(l, "steamapps", $"appmanifest_{SteamAppId}.acf"))
+            && string.Equals(Path.GetFullPath(Path.Combine(l, "steamapps", "common", "Brawlhalla")).TrimEnd('\\', '/'),
+                Path.GetFullPath(dir).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
+
+    public static string? SteamInstall() => FindAll().FirstOrDefault(IsSteamInstall);
+
+    static List<string> SteamLibraries()
     {
         var steams = new List<string>();
         if (OperatingSystem.IsWindows())
@@ -47,8 +59,7 @@ public static class GameFinder
             }
             catch (IOException) { }
         }
-        return libraries.Select(l => Path.Combine(l, "steamapps", "common", "Brawlhalla"))
-            .Where(IsGame).Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return libraries;
     }
 
     public static bool IsGame(string? dir) => dir != null && File.Exists(Path.Combine(dir, "BrawlhallaAir.swf"));
@@ -59,13 +70,28 @@ public static class GameFinder
     public static bool GameRunning() =>
         new[] { "Brawlhalla", "hl", "bifrost-vulkan" }.Any(n => System.Diagnostics.Process.GetProcessesByName(n).Length > 0);
 
-    public static void Play()
+    public static void Play(string? game)
     {
         try
         {
+            var exe = game == null ? null : Path.Combine(game, "Brawlhalla.exe");
+            if (exe != null && File.Exists(exe) && !IsSteamInstall(game))
+            {
+                MarkSteamApp(game!);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe)
+                { UseShellExecute = false, WorkingDirectory = game! })?.Dispose();
+                return;
+            }
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo($"steam://rungameid/{SteamAppId}")
             { UseShellExecute = true })?.Dispose();
         }
         catch (Exception) { }
+    }
+
+    public static void MarkSteamApp(string game)
+    {
+        var path = Path.Combine(game, "steam_appid.txt");
+        try { if (!File.Exists(path)) File.WriteAllText(path, SteamAppId); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 }

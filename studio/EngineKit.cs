@@ -77,6 +77,16 @@ public sealed class EngineKit(Project project)
         catch (Exception) { return null; }
     }
 
+    public static string OriginalExe(string game)
+    {
+        var exe = Path.Combine(game, "Brawlhalla.exe");
+        var stub = LauncherTail(game) != null
+                   || ((string?)ReadMarker(game)?["stub_sha256"] is { } hash && File.Exists(exe) && FileSha256(exe) == hash);
+        if (!stub) return exe;
+        return new[] { EngineDir(game), game }.Select(d => Path.Combine(d, "Brawlhalla.exe.bifrost-original")).FirstOrDefault(File.Exists)
+               ?? throw new InvalidOperationException("Brawlhalla's own Brawlhalla.exe is missing: verify the game files in Steam, then try again.");
+    }
+
     static bool SameFolder(string a, string b) =>
         string.Equals(Path.GetFullPath(a).TrimEnd('\\', '/'), Path.GetFullPath(b).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
 
