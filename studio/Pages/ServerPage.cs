@@ -21,6 +21,8 @@ public sealed class ServerPage : UserControl
     readonly Grid addresses = new() { ColumnDefinitions = new ColumnDefinitions("130,Auto,Auto"), RowSpacing = 4, Margin = new Thickness(0, 4, 0, 0) };
     readonly ContentControl settings = new();
     DateTime addressesAt = DateTime.MinValue;
+    DateTime forceArmedUntil = DateTime.MinValue;
+    string? forceNote;
     bool busy;
 
     public ServerPage(EngineKit engine, Func<string?> game, Func<Release?> release)
@@ -67,6 +69,12 @@ public sealed class ServerPage : UserControl
         if (!running) addressesAt = DateTime.MinValue;
         var newer = HostedServer.UpdateAvailable(release()?.ServerPackage);
         if (newer) hostSub.Text = taken ? "Another program uses this port. A server update is ready." : "A server update is ready.";
+        var stuck = taken || HostedServer.Orphaned;
+        if (taken && HostedServer.PortUserNames(HostedServer.Port) is { Length: > 0 } users)
+            hostSub.Text = $"Used by {users}." + (newer ? " A server update is ready." : "");
+        if (!stuck) forceNote = null;
+        if (forceNote != null) hostSub.Text = forceNote;
+        if (stuck) buttons.Children.Add(ForceStopButton());
         if (running && newer) buttons.Children.Add(Look.Secondary("Update", Look.Refresh, () => _ = Download()));
         if (running) buttons.Children.Add(Look.Secondary("Stop", Look.Stop, () => _ = Act(HostedServer.StopAsync)));
         else
@@ -79,7 +87,7 @@ public sealed class ServerPage : UserControl
             }));
             start.IsEnabled = engine.Python != null && !taken;
             buttons.Children.Add(start);
-            if (release()?.ServerPackage != null) buttons.Children.Add(Look.Secondary("Update", Look.Refresh, () => _ = Download()));
+            if (newer) buttons.Children.Add(Look.Secondary("Update", Look.Refresh, () => _ = Download()));
         }
         buttons.Children.Add(Look.Secondary("Open folder", Look.Folder, () => Ui.Open(HostedServer.Folder)));
     }
@@ -169,6 +177,27 @@ public sealed class ServerPage : UserControl
         busy = false;
         buttons.IsEnabled = true;
         Refresh();
+    }
+
+    Button ForceStopButton()
+    {
+        var port = HostedServer.Port;
+        var armed = DateTime.Now < forceArmedUntil;
+        return Look.Secondary(armed ? $"Click again: stop {HostedServer.PortUserNames(port)}" : $"Force stop port {port}", Look.Stop, () =>
+        {
+            if (DateTime.Now >= forceArmedUntil)
+            {
+                forceArmedUntil = DateTime.Now.AddSeconds(5);
+                Refresh();
+                return;
+            }
+            forceArmedUntil = DateTime.MinValue;
+            _ = Act(async () =>
+            {
+                forceNote = await HostedServer.ForceStopPortAsync(port);
+                await Task.Delay(500);
+            });
+        });
     }
 
     async Task Download()

@@ -97,7 +97,81 @@ public static class HostedServer
 
     public static bool Running => Downloaded && (WrapperRunning || ListenerIsOurs(Port));
 
-    public static bool PortTaken => !Running && Listening(Port);
+    public static bool PortTaken => !Running && (Listening(Port) || PortUsers(Port).Count > 0);
+
+    public static bool Orphaned => Running && !WrapperRunning;
+
+    public static IReadOnlyList<int> PortUsers(int port)
+    {
+        var found = new HashSet<int>();
+        if (!OperatingSystem.IsWindows()) return [];
+        ReadPortTable(true, 2, 24, 8, 20, port, found);
+        ReadPortTable(true, 23, 56, 20, 52, port, found);
+        ReadPortTable(false, 2, 12, 4, 8, port, found);
+        ReadPortTable(false, 23, 28, 20, 24, port, found);
+        return [.. found];
+    }
+
+    static void ReadPortTable(bool tcp, int family, int rowSize, int portAt, int pidAt, int port, HashSet<int> found)
+    {
+        uint Fill(IntPtr to, ref int length) => tcp
+            ? GetExtendedTcpTable(to, ref length, false, family, 3, 0)
+            : GetExtendedUdpTable(to, ref length, false, family, 1, 0);
+        var size = 0;
+        Fill(IntPtr.Zero, ref size);
+        if (size == 0) return;
+        var table = Marshal.AllocHGlobal(size);
+        try
+        {
+            if (Fill(table, ref size) != 0) return;
+            var rows = Marshal.ReadInt32(table);
+            for (var i = 0; i < rows; i++)
+            {
+                var row = table + 4 + i * rowSize;
+                var raw = Marshal.ReadInt32(row, portAt);
+                if (((raw & 0xFF) << 8 | (raw >> 8) & 0xFF) == port) found.Add(Marshal.ReadInt32(row, pidAt));
+            }
+        }
+        finally { Marshal.FreeHGlobal(table); }
+    }
+
+    static string ProcessLabel(int pid)
+    {
+        try
+        {
+            using var p = Process.GetProcessById(pid);
+            return $"{p.ProcessName} ({pid})";
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException) { return $"process {pid}"; }
+    }
+
+    public static string PortUserNames(int port) => string.Join(", ", PortUsers(port).Select(ProcessLabel));
+
+    public static async Task<string?> ForceStopPortAsync(int port)
+    {
+        var failed = new List<string>();
+        foreach (var pid in PortUsers(port))
+        {
+            var label = ProcessLabel(pid);
+            if (pid <= 4 || pid == Environment.ProcessId)
+            {
+                failed.Add(label);
+                continue;
+            }
+            try
+            {
+                using var p = Process.GetProcessById(pid);
+                p.Kill(entireProcessTree: true);
+                await p.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (ArgumentException) { }
+            catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException or TimeoutException or AggregateException)
+            {
+                failed.Add(label);
+            }
+        }
+        return failed.Count == 0 ? null : $"Couldn't stop {string.Join(", ", failed)}. It may need the app run as administrator, or be part of Windows.";
+    }
 
     static bool ListenerIsOurs(int port)
     {
@@ -134,6 +208,9 @@ public static class HostedServer
 
     [DllImport("iphlpapi.dll")]
     static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool sorted, int family, int tableClass, uint reserved);
+
+    [DllImport("iphlpapi.dll")]
+    static extern uint GetExtendedUdpTable(IntPtr table, ref int size, bool sorted, int family, int tableClass, uint reserved);
 
     public static async Task<List<(string Name, string Address)>> AddressesAsync()
     {
