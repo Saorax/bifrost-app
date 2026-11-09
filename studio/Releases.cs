@@ -56,35 +56,115 @@ public static class Releases
         DateTimeOffset.TryParse((string?)release["published_at"], out var at) ? at : null,
         (string?)release["html_url"] is { } url && url.StartsWith("https://github.com/", StringComparison.Ordinal) ? url : null);
 
+    static readonly string?[] problems = new string?[Enum.GetValues<Product>().Length];
+    public static string? Problem(Product product) => problems[(int)product];
+
+    static string Describe(Exception e) => e switch
+    {
+        TaskCanceledException => "no answer within 15 seconds",
+        HttpRequestException { InnerException: { } inner } h when !h.Message.Contains(inner.Message) => $"{h.Message} ({inner.Message})",
+        _ => e.Message,
+    };
+    
+    static async Task<string> GetTextAsync(HttpClient http, string url)
+    {
+        using var answer = await http.GetAsync(url);
+        if (answer.IsSuccessStatusCode) return await answer.Content.ReadAsStringAsync();
+        var status = $"{(int)answer.StatusCode} {answer.ReasonPhrase}";
+        if (answer.Headers.TryGetValues("X-RateLimit-Remaining", out var left) && left.FirstOrDefault() == "0")
+        {
+            var reset = answer.Headers.TryGetValues("X-RateLimit-Reset", out var r) && long.TryParse(r.FirstOrDefault(), out var at)
+                ? $", it resets at {DateTimeOffset.FromUnixTimeSeconds(at).ToLocalTime():HH:mm}" : "";
+            status += $": GitHub's hourly limit for this network is used up{reset}";
+        }
+        throw new HttpRequestException(status, null, answer.StatusCode);
+    }
+
     static async Task<(JsonNode Manifest, Dictionary<string, string> Urls)?> LatestManifestAsync(Product product)
     {
         if (ListUrl(product) is not { } url) return null;
         reached[(int)product] = false;
+        string apiProblem;
         try
         {
             using var http = Client();
             http.Timeout = TimeSpan.FromSeconds(15);
-            var answer = JsonNode.Parse(await http.GetStringAsync(url))!;
+            var answer = JsonNode.Parse(await GetTextAsync(http, url))!;
             reached[(int)product] = true;
-            var list = answer is JsonArray array ? array : new JsonArray(answer.DeepClone());
-            var names = product == Product.Bifrost ? new[] { Manifest(product), "release.json" } : [Manifest(product)];
-            foreach (var release in list.OfType<JsonObject>())
-            {
-                if ((bool?)release["draft"] == true || (bool?)release["prerelease"] == true) continue;
-                var urls = release["assets"]!.AsArray().ToDictionary(a => (string)a!["name"]!, a => (string)a!["browser_download_url"]!);
-                if (names.FirstOrDefault(urls.ContainsKey) is not { } name) continue;
-                var manifest = JsonNode.Parse(await http.GetStringAsync(urls[name]))!;
-                notes[(int)product] = NotesOf(release);
-                return (manifest, urls);
-            }
-            return null;
+            problems[(int)product] = null;
+            return await FromListAsync(product, http, answer);
+        }
+        catch (Exception e) when (!reached[(int)product]
+                                  && e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            apiProblem = $"api.github.com: {Describe(e)}";
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException
                                       or NullReferenceException or InvalidOperationException or ArgumentException)
         {
+            problems[(int)product] = $"read the release list, but not the latest release: {Describe(e)}";
+            return null;
+        }
+        try
+        {
+            var found = await LatestByDownloadAsync(product, Repo(product)!);
+            reached[(int)product] = true;
+            problems[(int)product] = $"{apiProblem}; got the latest release from github.com instead";
+            return found;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException
+                                      or InvalidOperationException or ArgumentException or UriFormatException)
+        {
+            problems[(int)product] = $"{apiProblem}; github.com: {Describe(e)}";
             return null;
         }
     }
+
+    static async Task<(JsonNode Manifest, Dictionary<string, string> Urls)?> FromListAsync(Product product, HttpClient http, JsonNode answer)
+    {
+        var list = answer is JsonArray array ? array : new JsonArray(answer.DeepClone());
+        var names = product == Product.Bifrost ? new[] { Manifest(product), "release.json" } : [Manifest(product)];
+        foreach (var release in list.OfType<JsonObject>())
+        {
+            if ((bool?)release["draft"] == true || (bool?)release["prerelease"] == true) continue;
+            var urls = release["assets"]!.AsArray().ToDictionary(a => (string)a!["name"]!, a => (string)a!["browser_download_url"]!);
+            if (names.FirstOrDefault(urls.ContainsKey) is not { } name) continue;
+            var manifest = JsonNode.Parse(await GetTextAsync(http, urls[name]))!;
+            notes[(int)product] = NotesOf(release);
+            return (manifest, urls);
+        }
+        return null;
+    }
+    static async Task<(JsonNode Manifest, Dictionary<string, string> Urls)?> LatestByDownloadAsync(Product product, string repo)
+    {
+        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("BifrostApp/1.0");
+        string target;
+        using (var redirect = await http.GetAsync($"https://github.com/{repo}/releases/latest/download/{Manifest(product)}"))
+        {
+            if (redirect.Headers.Location is not { } location)
+                throw new HttpRequestException($"{(int)redirect.StatusCode} {redirect.ReasonPhrase}", null, redirect.StatusCode);
+            target = (location.IsAbsoluteUri ? location : new Uri(new Uri("https://github.com/"), location)).AbsoluteUri;
+        }
+        var expected = $"https://github.com/{repo}/releases/download/";
+        if (!target.StartsWith(expected, StringComparison.OrdinalIgnoreCase) || target.IndexOf('/', expected.Length) < 0)
+            throw new HttpRequestException($"unexpected redirect to {target}");
+        var folder = target[..(target.LastIndexOf('/') + 1)];
+        using var follow = Client();
+        follow.Timeout = TimeSpan.FromSeconds(15);
+        var manifest = JsonNode.Parse(await GetTextAsync(follow, target))!;
+        var urls = AssetNames(manifest).Distinct().ToDictionary(name => name, name => folder + Uri.EscapeDataString(name));
+        return (manifest, urls);
+    }
+
+    static IEnumerable<string> AssetNames(JsonNode? node) => node switch
+    {
+        JsonObject o => (o["asset"] is JsonValue v && v.TryGetValue<string>(out var name) ? [name] : Enumerable.Empty<string>())
+            .Concat(o.Select(kv => kv.Value).SelectMany(AssetNames)),
+        JsonArray a => a.SelectMany(AssetNames),
+        _ => [],
+    };
 
     static Asset? Read(JsonNode? node, Dictionary<string, string> urls) =>
         node?["asset"] is { } name && urls.TryGetValue((string)name!, out var u)

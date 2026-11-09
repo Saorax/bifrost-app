@@ -30,7 +30,10 @@ public static class LogReport
     public static int Save(string game, string zip)
     {
         var files = Files(game);
-        if (!files.Any(f => File.Exists(f.Path))) return 0;
+        var checks = Enum.GetValues<Product>().Where(p => Releases.Repo(p) != null)
+            .Select(p => $"{p}: {Releases.Problem(p) ?? (Releases.Reached(p) ? "fine" : "not checked yet")}").ToList();
+        var checkFailed = Enum.GetValues<Product>().Any(p => Releases.Problem(p) != null);
+        if (!checkFailed && !files.Any(f => File.Exists(f.Path))) return 0;
         var list = new StringBuilder()
             .AppendLine("Bifrost log report")
             .AppendLine($"saved {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}")
@@ -62,6 +65,12 @@ public static class LogReport
                     {
                         list.AppendLine($"{entry}: couldn't read: {e.Message}");
                     }
+                }
+                if (checks.Count > 0)
+                {
+                    Add(archive, "update-check.txt", Clean(string.Join('\n', checks) + "\n"), DateTime.Now);
+                    list.AppendLine("update-check.txt: the last check for new releases");
+                    saved++;
                 }
                 Add(archive, "contents.txt", Clean(list.ToString()), DateTime.Now);
             }

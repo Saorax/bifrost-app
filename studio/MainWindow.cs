@@ -41,6 +41,7 @@ public sealed class MainWindow : Window
     OfficialRelease? latestOfficial;
     AppRelease? latestApp;
     string? notifiedApp, autoOfficial;
+    readonly Dictionary<Product, string?> loggedProblems = [];
     bool checkedOnline, working, everythingArmed, official;
     CancellationTokenSource? cancel;
     Action mainAction = () => { };
@@ -442,6 +443,12 @@ public sealed class MainWindow : Window
         latestOfficial = await officialTask ?? latestOfficial;
         latestApp = await appTask ?? latestApp;
         checkedOnline = true;
+        foreach (var product in Enum.GetValues<Product>())
+        {
+            var problem = Releases.Problem(product);
+            if (problem != null && problem != loggedProblems.GetValueOrDefault(product)) log.Append($"Update check ({product}): {problem}");
+            loggedProblems[product] = problem;
+        }
         await CheckApp();
         Refresh();
         await UpdateServer();
