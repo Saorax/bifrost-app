@@ -105,6 +105,9 @@ public static class Releases
             problems[(int)product] = $"read the release list, but not the latest release: {Describe(e)}";
             return null;
         }
+        var mirror = MirrorFolder(product);
+        var fromMirror = mirror == null ? null : LatestFromMirrorAsync(product, mirror);
+        string githubProblem;
         try
         {
             var found = await LatestByDownloadAsync(product, Repo(product)!);
@@ -112,12 +115,52 @@ public static class Releases
             problems[(int)product] = $"{apiProblem}; got the latest release from github.com instead";
             return found;
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException
-                                      or InvalidOperationException or ArgumentException or UriFormatException)
+        catch (Exception e) when (Fallible(e))
         {
-            problems[(int)product] = $"{apiProblem}; github.com: {Describe(e)}";
+            githubProblem = $"github.com: {Describe(e)}";
+        }
+        if (fromMirror == null)
+        {
+            problems[(int)product] = $"{apiProblem}; {githubProblem}";
             return null;
         }
+        var host = new Uri(mirror!).Host;
+        try
+        {
+            var found = await fromMirror;
+            reached[(int)product] = true;
+            problems[(int)product] = $"{apiProblem}; {githubProblem}; got the latest release from {host} instead";
+            return found;
+        }
+        catch (Exception e) when (Fallible(e))
+        {
+            problems[(int)product] = $"{apiProblem}; {githubProblem}; {host}: {Describe(e)}";
+            return null;
+        }
+    }
+
+    static bool Fallible(Exception e) => e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException
+        or InvalidOperationException or ArgumentException or UriFormatException;
+
+    static string? MirrorFolder(Product product) =>
+        Metadata("ReleaseMirror") is { } mirror && Repo(product) is { } repo
+            ? $"{mirror.TrimEnd('/')}/{repo[(repo.LastIndexOf('/') + 1)..]}/" : null;
+
+    static async Task<(JsonNode Manifest, Dictionary<string, string> Urls)> LatestFromMirrorAsync(Product product, string mirror)
+    {
+        using var http = Client();
+        http.Timeout = TimeSpan.FromSeconds(15);
+        var tag = (await GetTextAsync(http, mirror + "latest.txt")).Trim();
+        if (tag.Length == 0 || tag[0] == '.' || tag.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('.' or '-' or '_')))
+            throw new HttpRequestException("latest.txt doesn't name a release");
+        return await FromFolderAsync(http, $"{mirror}{tag}/", Manifest(product));
+    }
+
+    static async Task<(JsonNode Manifest, Dictionary<string, string> Urls)> FromFolderAsync(HttpClient http, string folder, string name)
+    {
+        var manifest = JsonNode.Parse(await GetTextAsync(http, folder + name))!;
+        var urls = AssetNames(manifest).Distinct().ToDictionary(asset => asset, asset => folder + Uri.EscapeDataString(asset));
+        return (manifest, urls);
     }
 
     static async Task<(JsonNode Manifest, Dictionary<string, string> Urls)?> FromListAsync(Product product, HttpClient http, JsonNode answer)
@@ -150,12 +193,10 @@ public static class Releases
         var expected = $"https://github.com/{repo}/releases/download/";
         if (!target.StartsWith(expected, StringComparison.OrdinalIgnoreCase) || target.IndexOf('/', expected.Length) < 0)
             throw new HttpRequestException($"unexpected redirect to {target}");
-        var folder = target[..(target.LastIndexOf('/') + 1)];
         using var follow = Client();
         follow.Timeout = TimeSpan.FromSeconds(15);
-        var manifest = JsonNode.Parse(await GetTextAsync(follow, target))!;
-        var urls = AssetNames(manifest).Distinct().ToDictionary(name => name, name => folder + Uri.EscapeDataString(name));
-        return (manifest, urls);
+        var cut = target.LastIndexOf('/') + 1;
+        return await FromFolderAsync(follow, target[..cut], target[cut..]);
     }
 
     static IEnumerable<string> AssetNames(JsonNode? node) => node switch

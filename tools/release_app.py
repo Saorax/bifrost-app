@@ -22,6 +22,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOS = {"app": "Saorax/bifrost-app", "bifrost": "Saorax/bifrost", "official": "Saorax/bh-client"}
+MIRROR = "https://bifrost.saorax.com/download"
 
 
 def git(*args: str) -> str:
@@ -67,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     for product, repo in REPOS.items():
         p.add_argument(f"--{product}-repo", default=repo, help=f"OWNER/NAME of {product} releases (default {repo})")
     p.add_argument("--icon", type=Path, default=None, help="the .ico to build in (default: read from the Steam install)")
+    p.add_argument("--mirror", default=MIRROR, help=f"the copy of the releases used when GitHub can't be reached (default {MIRROR}, '' for none)")
     p.add_argument("--version", default=None, help="the release name (default: YYYYMMDD-NN<commit>)")
     p.add_argument("--publish", action="store_true", help="create the GitHub release")
     a = p.parse_args(argv)
@@ -74,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     version = a.version or next_version(repos["app"])
     build = [sys.executable, str(ROOT / "tools" / "build_studio.py"), "--rid", "win-x64", f"--version={version}",
              *[f"--{product}-repo={repo}" for product, repo in repos.items()],
+             *([f"--mirror={a.mirror}"] if a.mirror else []),
              *([f"--icon={a.icon}"] if a.icon else [])]
     if subprocess.run(build).returncode != 0:
         return 1

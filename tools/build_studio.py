@@ -145,8 +145,9 @@ def write_icon(game: Path, out: Path) -> bool:
 
 
 def publish_command(rid: str, repo: str | None = None, repos: dict[str, str] | None = None,
-                    version: str | None = None, icon: Path | None = None) -> list[str]:
+                    version: str | None = None, icon: Path | None = None, mirror: str | None = None) -> list[str]:
     extra = [f"-p:ReleaseRepo={repo}"] if repo else []
+    extra += [f"-p:ReleaseMirror={mirror}"] if mirror else []
     extra += [f"-p:{product.capitalize()}Repo={name}" for product, name in (repos or {}).items() if name]
     extra += [f"-p:AppVersion={version}"] if version else []
     extra += [f"-p:ApplicationIcon={icon}"] if icon and rid.startswith("win") else []
@@ -163,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bifrost-repo", default=None, help="OWNER/NAME of Bifrost's releases (default --repo)")
     parser.add_argument("--official-repo", default=None, help="OWNER/NAME of Official's releases (default --repo)")
     parser.add_argument("--version", default=None, help="the app's release name (YYYYMMDD-NN<commit>), built in")
+    parser.add_argument("--mirror", default=None, help="URL of a copy of the releases (<mirror>/<repo name>/latest.txt names the newest), built in")
     parser.add_argument("--game", type=Path, default=None, help="the Brawlhalla install the icon is read from (default: Steam's)")
     parser.add_argument("--icon", type=Path, default=None, help="an .ico made earlier, used instead of reading the install")
     args = parser.parse_args(argv)
@@ -185,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         named = [args.repo] if args.repo else [name for name in repos.values() if name]
         print(f"publishing {rid}" + (f" (releases from {', '.join(named)})" if named else " (no release repository: development)"),
               flush=True)
-        if subprocess.run(publish_command(rid, args.repo, repos, args.version, icon)).returncode != 0:
+        if subprocess.run(publish_command(rid, args.repo, repos, args.version, icon, args.mirror)).returncode != 0:
             print(f"failed: {rid}")
             return 1
         print(ROOT / "build" / "studio-app" / rid)

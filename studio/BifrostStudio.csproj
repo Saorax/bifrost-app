@@ -23,6 +23,7 @@
     <AssemblyMetadata Include="AppRepo" Value="$(AppRepo)" Condition="'$(AppRepo)' != ''" />
     <AssemblyMetadata Include="BifrostRepo" Value="$(BifrostRepo)" Condition="'$(BifrostRepo)' != ''" />
     <AssemblyMetadata Include="OfficialRepo" Value="$(OfficialRepo)" Condition="'$(OfficialRepo)' != ''" />
+    <AssemblyMetadata Include="ReleaseMirror" Value="$(ReleaseMirror)" Condition="'$(ReleaseMirror)' != ''" />
     <AssemblyMetadata Include="AppVersion" Value="$(AppVersion)" Condition="'$(AppVersion)' != ''" />
   </ItemGroup>
 
