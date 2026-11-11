@@ -67,7 +67,13 @@ public sealed class MainWindow : Window
         appUpdate = Look.Secondary("App update available", Look.Download, () => _ = UpdateApp());
         modeBifrost = ModeButton("Bifrost", false);
         modeOfficial = ModeButton("Official servers", true);
-        official = project.Settings.Mode != "bifrost";
+        official = !EngineKit.OfficialPaused && project.Settings.Mode != "bifrost";
+        if (EngineKit.OfficialPaused && project.Settings.Mode != "bifrost")
+        {
+            project.Settings.Mode = "bifrost";
+            project.Settings.Save();
+        }
+        modeOfficial.IsVisible = modeBifrost.IsVisible = !EngineKit.OfficialPaused;
         appUpdate.IsVisible = false;
         appUpdate.HorizontalAlignment = HorizontalAlignment.Right;
         appUpdate.VerticalAlignment = VerticalAlignment.Top;
@@ -90,7 +96,8 @@ public sealed class MainWindow : Window
         Content = new Grid { ColumnDefinitions = new ColumnDefinitions("232,*"), Children = { Sidebar(), page } };
 
         game = GameFinder.Find(project.Settings);
-        if (game != null && project.Settings.Mode == null && EngineKit.Installed(game) != null) official = EngineKit.ReadOfficialMode(game);
+        if (game != null && !EngineKit.OfficialPaused && project.Settings.Mode == null && EngineKit.Installed(game) != null)
+            official = EngineKit.ReadOfficialMode(game);
         PaintModes();
         LoadArt();
         Show("home");
@@ -99,10 +106,16 @@ public sealed class MainWindow : Window
         Opened += async (_, _) =>
         {
             notes = new WindowNotificationManager(this) { Position = NotificationPosition.TopRight, MaxItems = 2 };
+            await PauseOfficial();
             await CheckOnline();
         };
         new DispatcherTimer(TimeSpan.FromMinutes(30), DispatcherPriority.Background, (_, _) => { if (!working) _ = CheckOnline(); }).Start();
-        new DispatcherTimer(TimeSpan.FromSeconds(3), DispatcherPriority.Background, (_, _) => { if (!working) Refresh(); }).Start();
+        new DispatcherTimer(TimeSpan.FromSeconds(3), DispatcherPriority.Background, (_, _) =>
+        {
+            if (working) return;
+            if (EngineKit.OfficialPaused && pausedFor != (game ?? "")) _ = PauseOfficial();
+            else Refresh();
+        }).Start();
         new DispatcherTimer(TimeSpan.FromSeconds(14), DispatcherPriority.Background, (_, _) => NextArt()).Start();
     }
 
@@ -176,9 +189,43 @@ public sealed class MainWindow : Window
         }
     }
 
+    string? pausedFor, pauseFailure;
+
+    async Task PauseOfficial()
+    {
+        if (!EngineKit.OfficialPaused || working || pausedFor == (game ?? "") || GameFinder.GameRunning()) return;
+        var target = game;
+        working = true;
+        try
+        {
+            var removed = await Task.Run(() => EngineKit.PauseOfficial(target));
+            var onlyOfficial = target != null && EngineKit.EngineInstalled(target) && EngineKit.Installed(target) == null;
+            if (onlyOfficial) await engine.RemoveAsync(target!, log.Append);
+            pausedFor = target ?? "";
+            if (removed)
+            {
+                log.Append("Official servers are paused: Official was removed" + (onlyOfficial ? " and Brawlhalla is Steam's own game again" : "")
+                           + ". Its saves are kept.");
+                Notify("Official servers paused", onlyOfficial
+                    ? "Official servers are paused for now, so Official was removed and Brawlhalla is Steam's own game again. Install Bifrost here any time."
+                    : "Official servers are paused for now, so Official was removed. Bifrost works as usual.", NotificationType.Information);
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            if (e.Message != pauseFailure) log.Append($"Couldn't remove Official yet: {e.Message}");
+            pauseFailure = e.Message;
+        }
+        finally
+        {
+            working = false;
+            Refresh();
+        }
+    }
+
     async Task SetMode(bool wantOfficial)
     {
-        if (wantOfficial == official || working) return;
+        if (wantOfficial == official || working || wantOfficial && EngineKit.OfficialPaused) return;
         if (wantOfficial && !project.Settings.OfficialAccepted)
         {
             if (!await ConfirmOfficial()) return;
@@ -372,7 +419,10 @@ public sealed class MainWindow : Window
                         Look.Secondary("Use original game", Look.Folder, () => _ = SwapLauncher(original: true)),
                         Look.Secondary(GameFinder.IsSteamInstall(game) ? "Separate copy" : "Update from Steam", Look.Download, () => _ = CopyFromSteam()))),
                     Look.Card("Bifrost", Look.Tag, bifrost, bifrostSub, Row(remove)),
-                    Look.Card("Official servers", Look.Tag, officialText, officialSub, Row(removeOfficial)),
+                    EngineKit.OfficialPaused
+                        ? Look.Card("Official servers", Look.Tag, new TextBlock { Text = "Paused" },
+                            new TextBlock { Text = "Official servers are paused for now. Bifrost works as usual." })
+                        : Look.Card("Official servers", Look.Tag, officialText, officialSub, Row(removeOfficial)),
                     Look.Card("App", Look.Tag, appText, appSub, Row(Look.Secondary("What's new", Look.Logs, () => _ = ShowNotes(Product.App)))),
                     Look.Card("App data", Look.Folder, new TextBlock { Text = EngineKit.Home }, new TextBlock(),
                         Row(Look.Secondary("Open", Look.Folder, () => Ui.Open(EngineKit.Home)))),
@@ -437,7 +487,7 @@ public sealed class MainWindow : Window
     async Task CheckOnline()
     {
         var bifrostTask = Releases.LatestAsync();
-        var officialTask = Releases.LatestOfficialAsync();
+        var officialTask = EngineKit.OfficialPaused ? Task.FromResult<OfficialRelease?>(null) : Releases.LatestOfficialAsync();
         var appTask = Releases.LatestAppAsync();
         latest = await bifrostTask ?? latest;
         latestOfficial = await officialTask ?? latestOfficial;

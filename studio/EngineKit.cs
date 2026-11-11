@@ -137,6 +137,49 @@ public sealed class EngineKit(Project project)
         catch (Exception) { return false; }
     }
 
+    public static bool OfficialPaused => true;
+
+    public static bool PauseOfficial(string? game)
+    {
+        var removed = false;
+        if (game != null)
+        {
+            var built = Path.Combine(EngineDir(game), "official");
+            if (Directory.Exists(built))
+            {
+                DeleteTree(built);
+                removed = true;
+            }
+            if (ReadMarker(game) is JsonObject marker && (marker.ContainsKey("official") || (string?)marker["mode"] != "bifrost"))
+            {
+                marker.Remove("official");
+                marker["mode"] = "bifrost";
+                File.WriteAllText(MarkerPath(game), marker.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n");
+                removed = true;
+            }
+            if (File.Exists(LegacyModeFile(game))) File.Delete(LegacyModeFile(game));
+            var bin = Path.Combine(EngineDir(game), "bin");
+            if (File.Exists(Path.Combine(bin, "ncane.hdll")))
+            {
+                File.Delete(Path.Combine(bin, "ncane.hdll"));
+                removed = true;
+            }
+            var shim = Path.Combine(Downloaded, "engine", "bin", "Adobe AIR.dll");
+            var used = Path.Combine(bin, "Adobe AIR.dll");
+            if (File.Exists(shim) && File.Exists(used) && FileSha256(shim) != FileSha256(used))
+            {
+                File.Copy(shim, used, true);
+                removed = true;
+            }
+        }
+        if (Directory.Exists(OfficialLayer))
+        {
+            DeleteTree(OfficialLayer);
+            removed = true;
+        }
+        return removed;
+    }
+
     public static void WriteMode(string game, bool official)
     {
         if (ReadMarker(game) is not JsonObject marker) return;
