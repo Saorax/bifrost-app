@@ -1032,6 +1032,8 @@ public sealed class MainWindow : Window
         }
         else UseFolder(steam);
         if (installed) await Install();
+        if (to == InstallPlace.Steam && GameCopy.Unused(game) != null)
+            Notify("Old game copy", "Bifrost runs from Steam now. Its own copy of the game can be deleted under Folders in the gear menu.", NotificationType.Information);
         return null;
     }
 }

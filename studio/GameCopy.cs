@@ -64,6 +64,32 @@ public static class GameCopy
         return have.Exists && have.Length == source.Length && have.LastWriteTimeUtc == source.LastWriteTimeUtc;
     }
 
+    public static string? Unused(string? game)
+    {
+        var copy = BifrostFolders.Game;
+        if (game == null || InstallPlace.IsOwnFolder(game) || !Directory.Exists(copy)) return null;
+        try { return Directory.EnumerateFileSystemEntries(copy).Any() ? copy : null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    public static string? CantDelete(string copy)
+    {
+        static bool Inside(string? path, string root) =>
+            path != null && (Path.GetFullPath(path).TrimEnd('\\', '/') + Path.DirectorySeparatorChar).StartsWith(
+                Path.GetFullPath(root).TrimEnd('\\', '/') + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        var kept = new[] { Path.Combine(copy, "bifrost-engine"), EngineKit.SavesDir(copy), EngineKit.Storage(copy), EngineKit.Storage(copy, true) };
+        if (kept.Any(dir => Inside(dir, copy) && Directory.Exists(dir)))
+            return "The copy still has Bifrost's engine or saves in it, so it wasn't deleted. Open it and move them out first.";
+        return null;
+    }
+
+    public static Task DeleteAsync(string copy) => Task.Run(() =>
+    {
+        foreach (var file in Directory.EnumerateFiles(copy, "*", SearchOption.AllDirectories))
+            if (File.GetAttributes(file).HasFlag(FileAttributes.ReadOnly)) File.SetAttributes(file, FileAttributes.Normal);
+        Directory.Delete(copy, true);
+    });
+
     public static void CarrySaves(string from, string target)
     {
         var engine = FolderMigration.EngineTarget(target, carried: true);

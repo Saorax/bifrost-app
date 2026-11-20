@@ -130,6 +130,7 @@ public sealed class GameSettingsPanel : UserControl
 
     void Show(string key)
     {
+        if (key != section) copyArmed = false;
         section = key;
         foreach (var (k, b) in tabs) b.Classes.Set("selected", k == key);
         heading.Text = Sections.First(s => s.Key == key).Title;
@@ -337,6 +338,9 @@ public sealed class GameSettingsPanel : UserControl
             Row("Installed", InstallPlace.Describe(onSteam ? InstallPlace.Steam : InstallPlace.Own)
                 + (other == InstallPlace.Steam ? " Use Steam moves it to Steam's folder" : " Use its own folder moves it to a copy of the game")
                 + " and builds Bifrost again in a few minutes. Saves and settings come along.", switchButton);
+            var copies = new List<(TextBlock Help, BifrostPlace Place)>();
+            CopyRow(copies);
+            _ = FillSizes(copies);
         }
         if (actions.ViewLogs is { } viewLogs)
         {
@@ -397,13 +401,14 @@ public sealed class GameSettingsPanel : UserControl
         var openGame = Look.Secondary("Open", Look.Folder, () => Ui.Open(game, missing: "Brawlhalla wasn't found. Pick its folder in Settings."));
         openGame.IsEnabled = game != null && Directory.Exists(game);
         Row("Game", game ?? "Brawlhalla wasn't found.", openGame);
+        var shown = new List<(TextBlock Help, BifrostPlace Place)>();
+        CopyRow(shown);
         var engineDir = settings.State.Paths?.Engine;
         var move = Look.Secondary("Move", Look.Folder, () => _ = MoveEngine());
         move.IsEnabled = game != null && EngineKit.Installed(game) != null && free;
         var openEngine = Look.Secondary("Open", Look.Folder, () => Ui.Open(engineDir, missing: "Bifrost isn't installed yet, so there's no engine folder."));
         openEngine.IsEnabled = engineDir != null && Directory.Exists(engineDir);
         Row("Engine", (engineDir ?? "Not installed") + ". Moving it keeps your saves and settings.", Buttons(openEngine, move));
-        var shown = new List<(TextBlock Help, BifrostPlace Place)>();
         foreach (var place in BifrostPlaces.For(settings.State))
         {
             var help = Dim($"{place.Help}\n{place.Path}");
@@ -423,6 +428,50 @@ public sealed class GameSettingsPanel : UserControl
         clean.IsEnabled = free;
         Row("Clean up", $"Deletes leftover downloads and logs older than {BifrostPlaces.LogsKept.Days} days. Saves, settings, replays and mods stay.", clean);
         _ = FillSizes(shown);
+    }
+
+    bool copyArmed;
+
+    void CopyRow(List<(TextBlock Help, BifrostPlace Place)> shown)
+    {
+        if (GameCopy.Unused(settings.State.Game) is not { } copy) return;
+        var place = new BifrostPlace("Game copy", copy, "Left from when Bifrost ran from its own folder. Bifrost uses another game folder now, so this copy isn't used.");
+        var help = Dim($"{place.Help}\n{place.Path}");
+        var delete = Look.Secondary(copyArmed ? "Click again to delete" : "Delete", Look.Trash, () => _ = DeleteCopy(copy));
+        delete.IsEnabled = !settings.State.GameRunning && !actions.Busy();
+        Row(place.Name, help, delete);
+        shown.Add((help, place));
+    }
+
+    async Task DeleteCopy(string copy)
+    {
+        if (GameCopy.Unused(settings.State.Game) != copy || settings.State.GameRunning || actions.Busy()) return;
+        if (!copyArmed)
+        {
+            copyArmed = true;
+            note.Text = "Click again to delete the copy. Saves, settings, replays and mods stay.";
+            Show(section);
+            return;
+        }
+        copyArmed = false;
+        if (GameCopy.CantDelete(copy) is { } why)
+        {
+            note.Text = why;
+            Show(section);
+            return;
+        }
+        note.Text = "Deleting the game copy...";
+        var bytes = await Task.Run(() => BifrostPlaces.Size(copy));
+        try
+        {
+            await GameCopy.DeleteAsync(copy);
+            note.Text = $"Deleted the game copy ({Size(bytes)}).";
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            note.Text = "Some of the copy couldn't be deleted. " + e.Message;
+        }
+        Show(section);
     }
 
     static async Task FillSizes(List<(TextBlock Help, BifrostPlace Place)> shown)
