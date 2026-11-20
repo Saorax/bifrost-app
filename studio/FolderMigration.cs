@@ -72,6 +72,7 @@ public static class FolderMigration
     public static int MoveBuildFolders(JunctionMaker? makeJunction = null)
     {
         var moved = 0;
+        var kitMoved = false;
         foreach (var (from, to) in new[]
                  {
                      (BifrostFolders.OldWork, BifrostFolders.Work),
@@ -85,6 +86,7 @@ public static class FolderMigration
                 Directory.CreateDirectory(Path.GetDirectoryName(to)!);
                 Directory.Move(from, to);
                 moved++;
+                if (from == BifrostFolders.OldKit) kitMoved = true;
                 Log($"moved {from} to {to}");
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -107,7 +109,7 @@ public static class FolderMigration
                 Log($"{cache} stays for now: {e.Message}");
             }
         }
-        var relinked = RelinkWork(EngineKit.Work, makeJunction ?? MakeJunction);
+        var relinked = kitMoved ? RelinkWork(EngineKit.Work, makeJunction ?? MakeJunction) : 0;
         if (relinked > 0) Log($"pointed {relinked} links in {EngineKit.Work} at {BifrostFolders.Kit}");
         return moved;
     }
