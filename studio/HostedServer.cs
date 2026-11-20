@@ -101,6 +101,8 @@ public static class HostedServer
 
     public static bool Orphaned => Running && !WrapperRunning;
 
+    public static bool ConsoleReady => Downloaded && WrapperRunning;
+
     public static IReadOnlyList<int> PortUsers(int port)
     {
         var found = new HashSet<int>();
@@ -170,7 +172,7 @@ public static class HostedServer
                 failed.Add(label);
             }
         }
-        return failed.Count == 0 ? null : $"Couldn't stop {string.Join(", ", failed)}. It may need the app run as administrator, or be part of Windows.";
+        return failed.Count == 0 ? null : $"Couldn't stop {string.Join(", ", failed)}. Try running the app as administrator, unless it's part of Windows.";
     }
 
     static bool ListenerIsOurs(int port)
@@ -319,7 +321,7 @@ public static class HostedServer
     static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
 }
 
-public sealed record ServerInfo(string Name, int Players, IReadOnlyList<(string Activity, int Count)> Activity);
+public sealed record ServerInfo(string Name, int Players, IReadOnlyList<(string Activity, int Count)> Activity, bool SignIn = false, bool Whitelist = false, bool Https = false);
 
 public static class ServerStatus
 {
@@ -329,7 +331,11 @@ public static class ServerStatus
     {
         var at = address.LastIndexOf(':');
         if (at < 0 || !int.TryParse(address[(at + 1)..], out var port)) return null;
-        var host = address[..at];
+        return await FetchAsync(address[..at], port);
+    }
+
+    public static async Task<ServerInfo?> FetchAsync(string host, int port)
+    {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
         foreach (var scheme in new[] { "http", "https" })
         {
@@ -338,7 +344,8 @@ public static class ServerStatus
                 var info = JsonNode.Parse(await http.GetStringAsync($"{scheme}://{host}:{port + 1}/info"))!;
                 var activity = info["activity"] as JsonObject;
                 var shown = Shown.Select(k => (k, activity?[k]?.GetValue<int>() ?? 0)).Where(a => a.Item2 > 0).ToList();
-                return new ServerInfo((string?)info["name"] ?? "Bifrost server", info["players"]?.GetValue<int>() ?? 0, shown);
+                return new ServerInfo((string?)info["name"] ?? "Bifrost server", info["players"]?.GetValue<int>() ?? 0, shown,
+                    info["sign_in"]?.GetValue<bool>() ?? false, info["whitelist"]?.GetValue<bool>() ?? false, scheme == "https");
             }
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException
                                           or InvalidOperationException or FormatException or NullReferenceException) { }

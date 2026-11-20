@@ -96,13 +96,13 @@ public static class LogReport
     {
         var engine = EngineKit.EngineDir(game);
         var logs = Path.Combine(engine, "logs");
-        var storage = Path.Combine(engine, "storage");
-        var official = Path.Combine(engine, "storage-official");
+        var storage = EngineKit.Storage(game);
+        var official = EngineKit.Storage(game, true);
         return
         [
             .. EngineLogs.Concat(Found(logs, "bifrost-vulkan_*.log")).Select(n => ($"logs/{n}", Path.Combine(logs, n))),
             .. Run("official", official), ("official/engine.json", Path.Combine(official, "engine.json")),
-            .. Run("bifrost", LogsPage.Docs(game) ?? storage), ("bifrost/engine.json", Path.Combine(storage, "engine.json")),
+            .. Run("bifrost", LogsPage.Docs(game) is { } docs ? DocsLayout.CurrentRun(docs) : storage),("bifrost/engine.json", Path.Combine(storage, "engine.json")),
         ];
     }
 

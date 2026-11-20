@@ -20,9 +20,9 @@ public sealed class Settings
     public Dictionary<string, double>? StepSeconds { get; set; }
     public string? Mode { get; set; }
     public bool OfficialAccepted { get; set; }
+    public string? InstallPlace { get; set; }
 
-    static string FilePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BifrostStudio", "settings.json");
+    static string FilePath => BifrostFolders.StudioFile("settings.json");
 
     public static Settings Load()
     {

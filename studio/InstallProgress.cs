@@ -143,15 +143,15 @@ public sealed class InstallProgress : UserControl
     static string? Summary(string text)
     {
         if (text.StartsWith("building ") || text.StartsWith("built ")) return char.ToUpper(text[0]) + text[1..];
-        if (text.Contains("already built for this release")) return "Nothing changed since the last build: reusing it";
-        if (text.Contains("FFDec output is current")) return "Your game is unchanged: reusing what was read last time";
+        if (text.Contains("already built for this release")) return "Nothing changed since the last build, so reusing it";
+        if (text.Contains("FFDec output is current")) return "Your game hasn't changed, so reusing the last read";
         if (text.Contains("renamed")) return "Naming the game's code";
         if (text.Contains("aliases")) return "Applying Bifrost's names";
-        if (text.Contains("splices")) return "Fixing what the decompiler couldn't print";
+        if (text.Contains("splices")) return "Fixing code the decompiler missed";
         if (text.Contains("staged") && text.Contains("files for")) return "Preparing the converter";
         if (text.StartsWith("Bifrost tree at")) return "Adding Bifrost to the game's code";
         if (text.Contains("conversion tables from the cache")) return "Using the shipped conversion tables";
-        if (text.Contains("conversion cache hit")) return "Nothing changed since the last build: reusing it";
+        if (text.Contains("conversion cache hit")) return "Nothing changed since the last build, so reusing it";
         if (text.Contains("files converted")) return text.Replace("files converted", "files converted to Haxe");
         if (text.StartsWith("native fixes in")) return "Applied the engine's fixes to " + text.Split(':')[1].Trim().Split(',')[0];
         if (text.StartsWith("exported ")) return "Converted code ready";

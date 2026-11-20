@@ -31,7 +31,7 @@ public static class GameCopy
         var total = files.Values.Sum(f => new FileInfo(f).Length);
         var root = Path.GetPathRoot(Path.GetFullPath(target));
         if (root != null && new DriveInfo(root).AvailableFreeSpace < Pending(files, target))
-            throw new InvalidOperationException($"Not enough free space on {root} for a copy of Brawlhalla ({total / (1L << 30)} GB or more).");
+            throw new InvalidOperationException($"Not enough free space on {root} to copy Brawlhalla. It needs {total / (1L << 30)} GB or more.");
 
         Directory.CreateDirectory(target);
         long done = 0;
@@ -66,10 +66,10 @@ public static class GameCopy
 
     public static void CarrySaves(string from, string target)
     {
-        var engine = Path.Combine(target, "bifrost-engine");
+        var engine = FolderMigration.EngineTarget(target, carried: true);
         foreach (var name in new[] { "storage", "storage-official" })
         {
-            var source = Path.Combine(EngineKit.EngineDir(from), name);
+            var source = EngineKit.Storage(from, name == "storage-official");
             var into = Path.Combine(engine, name);
             if (!Directory.Exists(source) || Directory.Exists(into)) continue;
             foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))

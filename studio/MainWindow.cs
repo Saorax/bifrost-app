@@ -1,11 +1,9 @@
 using Avalonia;
-using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Notifications;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
-using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using System.Runtime.InteropServices;
@@ -14,43 +12,43 @@ namespace BifrostStudio;
 
 public sealed class MainWindow : Window
 {
-    static readonly string[] HeroArt = ["BG_Valhalla.jpg", "BG_Brawlhaven.jpg", "BG_Grove.jpg", "BG_Fjord.jpg",
-        "BG_MoonPalace.jpg", "BG_Elysium2.jpg", "BG_Temple.jpg", "BG_Celestial_ALL.jpg"];
-
     readonly Project project;
+    readonly AppState state;
     readonly EngineKit engine;
     readonly ContentControl page = new();
-    readonly Button navHome, navServer, navLogs, navSettings;
+    readonly PageRegistry pages = new();
+    readonly Dictionary<string, Button> nav = [];
+    string current = "home";
     WindowNotificationManager? notes;
 
-    readonly Image artA = Art(), artB = Art();
-    readonly Border heroBack = new() { Background = Look.Bridge() };
     readonly TextBlock tag = new() { FontSize = 12, FontWeight = FontWeight.SemiBold, Foreground = Brushes.White };
     readonly Border tagPill;
     readonly TextBlock title = new() { FontSize = 38, FontWeight = FontWeight.Black, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap };
     readonly TextBlock detail = new() { FontSize = 15, Foreground = new SolidColorBrush(Color.FromArgb(225, 255, 255, 255)), TextWrapping = TextWrapping.Wrap, MaxWidth = 520 };
-    readonly Button main, options, appUpdate, stop, modeBifrost, modeOfficial;
+    readonly Button main, gear, appUpdate, stop, modeBifrost, modeOfficial;
+    readonly GameSettingsPanel gameSettings;
     readonly InstallProgress progress;
     readonly Control idle;
     readonly TextBlock versionValue = new(), versionSub = new(), gameValue = new(), gameSub = new(), runsValue = new(), runsSub = new();
-    readonly Control home;
+    readonly HomePage home;
 
     readonly LogView log = new();
-    string? game;
-    Release? latest;
-    OfficialRelease? latestOfficial;
-    AppRelease? latestApp;
+    string? game { get => state.Game; set => state.Game = value; }
+    Release? latest { get => state.Latest; set => state.Latest = value; }
+    OfficialRelease? latestOfficial { get => state.LatestOfficial; set => state.LatestOfficial = value; }
+    AppRelease? latestApp { get => state.LatestApp; set => state.LatestApp = value; }
     string? notifiedApp, autoOfficial;
     readonly Dictionary<Product, string?> loggedProblems = [];
     bool checkedOnline, working, everythingArmed, official;
     CancellationTokenSource? cancel;
     Action mainAction = () => { };
-    int art;
-    List<string> artFiles = [];
+    OnlineService? online;
+    OnlinePage? onlinePage;
 
     public MainWindow(Project project)
     {
         this.project = project;
+        state = new AppState(project);
         engine = new EngineKit(project);
         Title = "Bifrost";
         Width = 1120;
@@ -62,8 +60,10 @@ public sealed class MainWindow : Window
         detail.PropertyChanged += (_, e) => { if (e.Property == TextBlock.TextProperty) detail.IsVisible = !string.IsNullOrEmpty(detail.Text); };
 
         main = Look.Primary("Install", Look.Download, () => mainAction());
-        options = OptionsButton();
-        stop = Look.Secondary("Stop", Look.Stop, () => cancel?.Cancel());
+        gear = RoundButton(Look.Cog);
+        ToolTip.SetTip(gear, "Game settings");
+        gear.Click += (_, _) => ToggleGameSettings(true);
+        stop =Look.Secondary("Stop", Look.Stop, () => cancel?.Cancel());
         appUpdate = Look.Secondary("App update available", Look.Download, () => _ = UpdateApp());
         modeBifrost = ModeButton("Bifrost", false);
         modeOfficial = ModeButton("Official servers", true);
@@ -84,16 +84,37 @@ public sealed class MainWindow : Window
             Padding = new Thickness(10, 4), HorizontalAlignment = HorizontalAlignment.Left,
             Child = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Children = { Look.Icon(Look.Tag, 12, Colors.White), tag } },
         };
-        navHome = Look.Nav("Home", Look.Home, () => Show("home"));
-        navServer = Look.Nav("Server", Look.Server, () => Show("server"));
-        navLogs = Look.Nav("Logs", Look.Logs, () => Show("logs"));
-        navSettings = Look.Nav("Settings", Look.Tune, () => Show("settings"));
         idle = Idle();
-        home = Home();
+        home = new HomePage(appUpdate, idle, progress,
+            Look.Card("Version", Look.Tag, versionValue, versionSub,
+                Look.Link("What's new", Look.Logs, () => _ = ShowNotes(official ? Product.Official : Product.Bifrost))),
+            Look.Card("Brawlhalla", Look.Folder, gameValue, gameSub, Look.Link("Open folder", Look.Folder, () => Ui.Open(game, missing: "Brawlhalla wasn't found. Pick its folder in Settings."))),
+            Look.Card("Recent runs", Look.Pulse, runsValue, runsSub, Look.Link("View logs", Look.Logs, () => Show("logs"))));
+        gameSettings = new GameSettingsPanel(new GameSettings(state),
+            new SettingsActions(() => ToggleGameSettings(false), () => _ = Install(fresh: true), MoveEngine, () => working,
+                async () =>
+                {
+                    var why = await SwitchPlace();
+                    if (why != null) Notify("Didn't switch", why, NotificationType.Warning);
+                    return why;
+                },
+                () => _ = CleanRebuild(), () => official ? latestOfficial != null : latest != null,
+                original => _ = SwapLauncher(original), () => Show("logs"))) { IsVisible = false };
+        home.AddOverlay(gameSettings);
+        state.Changed += gameSettings.Refresh;
+        pages.Add("home", "Home", Look.Home, () => home)
+            .Add("replays", "Replays", Look.Play, () => new ReplaysPage(new ReplayLibrary(state), state))
+            .Add("mods", "Mods", Look.Wrench, () => new ModsPage(new ModLibrary(state), state))
+            .Add("setups", "Setups", Look.Tag, () => new SetupsPage(new SetupLibrary(state), state))
+            .Add("online", "Online", Look.Pulse, () => onlinePage ??= MakeOnline())
+            .Add("server", "Server", Look.Server, () => new ServerPage(engine, () => game, () => latest))
+            .Add("logs", "Logs", Look.Logs, () => new LogsPage(game, log))
+            .Add("settings", "Settings", Look.Tune, () => new SettingsPage(SettingsModel()));
+        foreach (var p in pages.All) nav[p.Key] = Look.Nav(p.Title, p.Icon, () => Show(p.Key));
 
         Grid.SetColumn(page, 1);
         page.Margin = new Thickness(26, 24, 26, 24);
-        Content = new Grid { ColumnDefinitions = new ColumnDefinitions("232,*"), Children = { Sidebar(), page } };
+        Content = new Grid { ColumnDefinitions = new ColumnDefinitions("232,*"), Children = { Sidebar(), page, Toast() } };
 
         game = GameFinder.Find(project.Settings);
         if (game != null && !EngineKit.OfficialPaused && project.Settings.Mode == null && EngineKit.Installed(game) != null)
@@ -107,6 +128,7 @@ public sealed class MainWindow : Window
         {
             notes = new WindowNotificationManager(this) { Position = NotificationPosition.TopRight, MaxItems = 2 };
             await PauseOfficial();
+            await MoveEngineOut();
             await CheckOnline();
         };
         new DispatcherTimer(TimeSpan.FromMinutes(30), DispatcherPriority.Background, (_, _) => { if (!working) _ = CheckOnline(); }).Start();
@@ -116,7 +138,7 @@ public sealed class MainWindow : Window
             if (EngineKit.OfficialPaused && pausedFor != (game ?? "")) _ = PauseOfficial();
             else Refresh();
         }).Start();
-        new DispatcherTimer(TimeSpan.FromSeconds(14), DispatcherPriority.Background, (_, _) => NextArt()).Start();
+        new DispatcherTimer(TimeSpan.FromSeconds(14), DispatcherPriority.Background, (_, _) => home.NextArt()).Start();
     }
 
 
@@ -124,49 +146,74 @@ public sealed class MainWindow : Window
     {
         var word = new TextBlock { Text = "BIFROST", FontSize = 28, FontWeight = FontWeight.Black, LetterSpacing = 4, Foreground = Look.Brush(Look.Accent) };
         var sub = new TextBlock { Text = "for Brawlhalla", FontSize = 12, Foreground = Look.Brush(Look.Dim), Margin = new Thickness(2, 0, 0, 0) };
-        var nav = new StackPanel { Spacing = 4, Margin = new Thickness(0, 34, 0, 0), Children = { navHome, navServer, navLogs, navSettings } };
+        var list = new StackPanel { Spacing = 4, Margin = new Thickness(0, 34, 0, 0) };
+        foreach (var p in pages.All) list.Children.Add(nav[p.Key]);
         return new Border
         {
             Background = Look.Brush(Look.Side), Padding = new Thickness(18, 28, 18, 20),
             BorderBrush = Look.Brush(Look.Line), BorderThickness = new Thickness(0, 0, 1, 0),
-            Child = new StackPanel { Children = { word, sub, nav } },
+            Child = new StackPanel { Children = { word, sub, list } },
         };
     }
 
-    static Image Art() => new()
+    static Button RoundButton(string icon) => new()
     {
-        Stretch = Stretch.UniformToFill, Opacity = 0,
-        Transitions = new Transitions { new DoubleTransition { Property = Visual.OpacityProperty, Duration = TimeSpan.FromSeconds(1.4) } },
+        Classes = { "secondary" }, Background = Look.Brush(Look.Raised), Width = 54, Height = 54,
+        CornerRadius = new CornerRadius(27), HorizontalContentAlignment = HorizontalAlignment.Center,
+        VerticalContentAlignment = VerticalAlignment.Center, Content = Look.Icon(icon, 22, Colors.White),
     };
 
-    Button OptionsButton()
+    void ToggleGameSettings(bool open)
     {
-        var b = new Button
+        if (open && current != "home") Show("home");
+        gameSettings.IsVisible = open;
+        if (open) gameSettings.Open();
+    }
+
+    async Task<string?> MoveEngine(string target)
+    {
+        if (game == null || working) return "Wait for the app to finish what it's doing.";
+        if (GameFinder.GameRunning()) return "Close Brawlhalla first.";
+        working = true;
+        string? failure = null;
+        try
         {
-            Classes = { "secondary" }, Background = Look.Brush(Look.Raised), Width = 54, Height = 54,
-            CornerRadius = new CornerRadius(27), HorizontalContentAlignment = HorizontalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center,
-            Content = Look.Icon("M12,16A2,2 0 0,1 14,18A2,2 0 0,1 12,20A2,2 0 0,1 10,18A2,2 0 0,1 12,16M12,10A2,2 0 0,1 14,12A2,2 0 0,1 12,14A2,2 0 0,1 10,12A2,2 0 0,1 12,10M12,4A2,2 0 0,1 14,6A2,2 0 0,1 12,8A2,2 0 0,1 10,6A2,2 0 0,1 12,4Z", 22, Colors.White),
-        };
-        var repair = new MenuItem { Header = "Repair", Icon = Look.Icon(Look.Wrench, 14, Look.Text) };
-        repair.Click += (_, _) => _ = Install(fresh: true);
-        var clean = new MenuItem { Header = "Clean rebuild", Icon = Look.Icon(Look.Refresh, 14, Look.Text) };
-        clean.Click += (_, _) => _ = CleanRebuild();
-        var original = new MenuItem { Header = "Use original game", Icon = Look.Icon(Look.Folder, 14, Look.Text) };
-        original.Click += (_, _) => _ = SwapLauncher(original: true);
-        var folder = new MenuItem { Header = "Open game folder", Icon = Look.Icon(Look.Folder, 14, Look.Text) };
-        folder.Click += (_, _) => Ui.Open(game);
-        var logs = new MenuItem { Header = "View logs", Icon = Look.Icon(Look.Logs, 14, Look.Text) };
-        logs.Click += (_, _) => Show("logs");
-        var flyout = new MenuFlyout { Placement = PlacementMode.TopEdgeAlignedRight, Items = { repair, clean, original, folder, logs } };
-        flyout.Opening += (_, _) =>
+            await engine.MoveEngineAsync(game, target, log.Append);
+            state.Poll();
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
         {
-            repair.IsEnabled = game != null && EngineKit.Installed(game) != null && !working;
-            clean.IsEnabled = game != null && !working && (official ? latestOfficial != null : latest != null);
-            original.IsEnabled = game != null && !working && EngineKit.Installed(game) != null && !EngineKit.Original(game);
-        };
-        b.Flyout = flyout;
-        return b;
+            log.Append(e.Message);
+            failure = e.Message;
+        }
+        finally
+        {
+            working = false;
+            Refresh();
+        }
+        if (failure == null) Notify("Engine moved", $"Bifrost's engine is now in {target}. Saves and settings came with it.", NotificationType.Information);
+        return failure;
+    }
+
+    async Task MoveEngineOut()
+    {
+        if (working || game == null || engine.Folder == null || !FolderMigration.EngineInGameFolder(game)) return;
+        var target = game;
+        working = true;
+        string? moved = null;
+        try
+        {
+            moved = await FolderMigration.MoveEngineOutAsync(target, GameFinder.GameRunning(), (g, to) => engine.MoveEngineAsync(g, to, log.Append));
+            if (moved != null) state.Poll();
+        }
+        finally
+        {
+            working = false;
+            Refresh();
+        }
+        if (moved != null)
+            Notify("Bifrost moved out of the game folder", $"Its engine, saves and Steam's original Brawlhalla.exe are now in {moved}. Only Bifrost's Brawlhalla.exe and the mods folder stay in the game folder.",
+                NotificationType.Information);
     }
 
     Button ModeButton(string text, bool isOfficial)
@@ -204,10 +251,10 @@ public sealed class MainWindow : Window
             pausedFor = target ?? "";
             if (removed)
             {
-                log.Append("Official servers are paused: Official was removed" + (onlyOfficial ? " and Brawlhalla is Steam's own game again" : "")
+                log.Append("Official servers are paused, so Official was removed" + (onlyOfficial ? " and Brawlhalla is Steam's own game again" : "")
                            + ". Its saves are kept.");
                 Notify("Official servers paused", onlyOfficial
-                    ? "Official servers are paused for now, so Official was removed and Brawlhalla is Steam's own game again. Install Bifrost here any time."
+                    ? "Official servers are paused for now, so Official was removed and Brawlhalla is Steam's own game again. You can install Bifrost any time."
                     : "Official servers are paused for now, so Official was removed. Bifrost works as usual.", NotificationType.Information);
             }
         }
@@ -332,7 +379,7 @@ public sealed class MainWindow : Window
         var actions = new StackPanel
         {
             Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Bottom,
-            HorizontalAlignment = HorizontalAlignment.Right, Children = { main, options },
+            HorizontalAlignment = HorizontalAlignment.Right, Children = { main, gear },
         };
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), VerticalAlignment = VerticalAlignment.Bottom };
         Grid.SetColumn(actions, 1);
@@ -341,146 +388,50 @@ public sealed class MainWindow : Window
         return grid;
     }
 
-    Control Home()
-    {
-        var shade = new Border
-        {
-            Background = new LinearGradientBrush
-            {
-                StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative), EndPoint = new RelativePoint(0.35, 1, RelativeUnit.Relative),
-                GradientStops =
-                {
-                    new GradientStop(Color.FromArgb(40, 9, 11, 22), 0), new GradientStop(Color.FromArgb(150, 9, 11, 22), 0.55),
-                    new GradientStop(Color.FromArgb(235, 9, 11, 22), 1),
-                },
-            },
-        };
-        var inner = new Panel { Margin = new Thickness(34, 26, 34, 30), Children = { appUpdate, idle, progress } };
-        var hero = new Border
-        {
-            CornerRadius = new CornerRadius(20), ClipToBounds = true, MinHeight = 340,
-            Child = new Panel { Children = { heroBack, artA, artB, shade, inner } },
-        };
+    SettingsView SettingsModel() => new(
+        game, game == null ? null : EngineKit.Installed(game), Have, game == null ? null : EngineKit.OfficialInstalled(game),
+        latestOfficial?.Name, latestApp?.Name, appUpdate.IsVisible, everythingArmed,
+        () => _ = Locate(), () => _ = SwapLauncher(original: true), () => _ = CopyFromSteam(), () => _ = Remove(),
+        () => _ = RemoveOfficial(), () => _ = ShowNotes(Product.App), () => _ = RemoveEverything());
 
-        var cards = new UniformGrid { Columns = 3, Margin = new Thickness(-8, 0) };
-        cards.Children.Add(Pad(Look.Card("Version", Look.Tag, versionValue, versionSub,
-            Look.Link("What's new", Look.Logs, () => _ = ShowNotes(official ? Product.Official : Product.Bifrost)))));
-        cards.Children.Add(Pad(Look.Card("Brawlhalla", Look.Folder, gameValue, gameSub,
-            Look.Link("Open folder", Look.Folder, () => Ui.Open(game)))));
-        cards.Children.Add(Pad(Look.Card("Recent runs", Look.Pulse, runsValue, runsSub,
-            Look.Link("View logs", Look.Logs, () => Show("logs")))));
-
-        var grid = new Grid { RowDefinitions = new RowDefinitions("*,Auto"), RowSpacing = 18 };
-        Grid.SetRow(cards, 1);
-        grid.Children.Add(hero);
-        grid.Children.Add(cards);
-        return grid;
-    }
-
-    static Control Pad(Control c)
-    {
-        c.Margin = new Thickness(8, 0);
-        return c;
-    }
-
-    Control Settings()
-    {
-        var installed = game == null ? null : EngineKit.Installed(game);
-        var have = Have;
-        var bifrost = new TextBlock { Text = InstalledText(installed) };
-        var bifrostSub = new TextBlock { Text = have == null ? "" : installed == have ? "Up to date" : $"Latest {have}" };
-        var remove = Look.Secondary("Remove", Look.Trash, () => _ = Remove());
-        remove.IsVisible = installed != null;
-        var officialInstalled = game == null ? null : EngineKit.OfficialInstalled(game);
-        var officialText = new TextBlock { Text = InstalledText(officialInstalled) };
-        var officialSub = new TextBlock
-        {
-            Text = latestOfficial == null ? "" : officialInstalled == latestOfficial.Name ? "Up to date" : $"Latest {latestOfficial.Name}",
-        };
-        var removeOfficial = Look.Secondary("Remove", Look.Trash, () => _ = RemoveOfficial());
-        removeOfficial.IsVisible = officialInstalled != null;
-        var appText = new TextBlock { Text = Releases.AppVersion ?? "Development build" };
-        var appSub = new TextBlock
-        {
-            Text = latestApp == null ? "" : appUpdate.IsVisible ? $"Update to {latestApp.Name}" : "Up to date",
-        };
-        var everything = Look.Secondary(everythingArmed ? "Click again: remove everything" : "Remove everything", Look.Trash,
-            () => _ = RemoveEverything());
-        return new ScrollViewer
-        {
-            Content = new StackPanel
-            {
-                Spacing = 16, MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Left,
-                Children =
-                {
-                    new TextBlock { Text = "Settings", FontSize = 30, FontWeight = FontWeight.Bold, Foreground = Look.Brush(Look.Text) },
-                    Look.Card("Brawlhalla", Look.Folder, new TextBlock { Text = game ?? "Not found" }, new TextBlock(), Row(
-                        Look.Secondary("Change", Look.Folder, () => _ = Locate()), Look.Secondary("Open", Look.Folder, () => Ui.Open(game)),
-                        Look.Secondary("Use original game", Look.Folder, () => _ = SwapLauncher(original: true)),
-                        Look.Secondary(GameFinder.IsSteamInstall(game) ? "Separate copy" : "Update from Steam", Look.Download, () => _ = CopyFromSteam()))),
-                    Look.Card("Bifrost", Look.Tag, bifrost, bifrostSub, Row(remove)),
-                    EngineKit.OfficialPaused
-                        ? Look.Card("Official servers", Look.Tag, new TextBlock { Text = "Paused" },
-                            new TextBlock { Text = "Official servers are paused for now. Bifrost works as usual." })
-                        : Look.Card("Official servers", Look.Tag, officialText, officialSub, Row(removeOfficial)),
-                    Look.Card("App", Look.Tag, appText, appSub, Row(Look.Secondary("What's new", Look.Logs, () => _ = ShowNotes(Product.App)))),
-                    Look.Card("App data", Look.Folder, new TextBlock { Text = EngineKit.Home }, new TextBlock(),
-                        Row(Look.Secondary("Open", Look.Folder, () => Ui.Open(EngineKit.Home)))),
-                    Look.Card("Remove everything", Look.Trash, new TextBlock { Text = "Bifrost, its saves and its files" },
-                        new TextBlock { Text = "The game goes back to Steam's own; your server's data is deleted too" }, Row(everything)),
-                },
-            },
-        };
-    }
-
-    static StackPanel Row(params Control[] items)
+    internal static StackPanel Row(params Control[] items)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 8, 0, 0) };
         foreach (var i in items) row.Children.Add(i);
         return row;
     }
 
+    OnlinePage MakeOnline()
+    {
+        var settings = new GameSettings(state);
+        online ??= new OnlineService(new Net.ServerAccounts(Net.ServerAccounts.DefaultFile, () => settings.ServerFile));
+        return new OnlinePage(online, new OnlineHooks(
+            () => OnlineService.KnownServers(settings),
+            online.UseAsync,
+            s => settings.UseServer(s.Host, s.Port),
+            () => state.Paths?.GameReplays ?? state.Paths?.Replays,
+            Ui.Browse,
+            s => ServerStatus.FetchAsync(s.Host, s.Port),
+            () => DateTime.Now,
+            () => new ModLibrary(state).Load(),
+            (entry, package, uploader) => new ModLibrary(state).InstallDownload(entry, package, uploader),
+            () => state.Game));
+    }
+
     void Show(string name)
     {
-        foreach (var (button, key) in new[] { (navHome, "home"), (navServer, "server"), (navLogs, "logs"), (navSettings, "settings") })
-            button.Classes.Set("selected", key == name);
-        page.Content = name switch
-        {
-            "logs" => new LogsPage(game, log),
-            "server" => new ServerPage(engine, () => game, () => latest),
-            "settings" => Settings(),
-            _ => home,
-        };
+        var info = pages.Find(name);
+        current = info.Key;
+        if (info.Key != "home") gameSettings.IsVisible = false;
+        foreach (var (key, button) in nav) button.Classes.Set("selected", key == info.Key);
+        page.Content = info.Make();
     }
 
 
     void LoadArt()
     {
-        var dir = game == null ? null : System.IO.Path.Combine(game, "mapArt", "Backgrounds");
-        artFiles = dir == null ? [] : HeroArt.Select(n => System.IO.Path.Combine(dir, n)).Where(File.Exists).ToList();
-        art = 0;
-        if (artFiles.Count > 0) SetArt(artA, artFiles[0]);
+        home.LoadArt(game);
         Icon = AppIcon.FromGame(game) ?? Icon;
-    }
-
-    void NextArt()
-    {
-        if (artFiles.Count < 2) return;
-        art = (art + 1) % artFiles.Count;
-        var (show, hide) = artA.Opacity > 0.5 ? (artB, artA) : (artA, artB);
-        SetArt(show, artFiles[art]);
-        hide.Opacity = 0;
-    }
-
-    static void SetArt(Image image, string file)
-    {
-        try
-        {
-            using var stream = File.OpenRead(file);
-            image.Source = Bitmap.DecodeToWidth(stream, 1600);
-            image.Opacity = 1;
-        }
-        catch (Exception) { }
     }
 
 
@@ -527,20 +478,17 @@ public sealed class MainWindow : Window
         if (appUpdate.IsVisible && latestApp != null && notifiedApp != latestApp.Name)
         {
             notifiedApp = latestApp.Name;
-            Notify("App update", $"Bifrost app {latestApp.Name} is ready: press App update.", NotificationType.Information);
+            Notify("App update", $"Bifrost app {latestApp.Name} is ready. Press App update to get it.", NotificationType.Information);
         }
     }
 
     void Refresh()
     {
         if (working) return;
-        var found = GameFinder.IsGame(game) ? game : GameFinder.Find(project.Settings);
-        if (found != game)
-        {
-            game = found;
-            LoadArt();
-        }
-        var running = GameFinder.GameRunning();
+        var before = game;
+        state.Poll();
+        if (game != before) LoadArt();
+        var running = state.GameRunning;
         if (game != null && official)
         {
             RefreshOfficial(running);
@@ -558,7 +506,7 @@ public sealed class MainWindow : Window
         }
         else if (installed != null && EngineKit.Original(game))
         {
-            Status("Original game", "Brawlhalla.exe is Steam's own. Bifrost is still built: Use Bifrost switches back in seconds.",
+            Status("Original game", "Brawlhalla.exe is Steam's own right now. Use Bifrost switches back in seconds.",
                 "Use Bifrost", Look.Play, () => _ = SwapLauncher(original: false));
             main.IsEnabled = !running;
         }
@@ -575,12 +523,12 @@ public sealed class MainWindow : Window
         else if (have != null && installed != have)
         {
             Status("Update available", supported ? $"Bifrost {have} is ready."
-                : filesNote ?? "Brawlhalla was updated: Bifrost will update for it soon.", "Update", Look.Refresh, () => _ = Install());
+                : filesNote ?? "Brawlhalla was updated. Bifrost will update for it soon.", "Update", Look.Refresh, () => _ = Install());
             main.IsEnabled = supported && !running;
         }
         else if (!EngineKit.InstalledGameMatches(game, false))
         {
-            Status("Waiting for an update", "Steam updated Brawlhalla. Bifrost will update for it soon; until then Play offers Brawlhalla's own game.",
+            Status("Waiting for an update", "Steam updated Brawlhalla. Until Bifrost updates for it, Play starts Brawlhalla's own game.",
                 "Play", Look.Play, () => GameFinder.Play(game));
         }
         else
@@ -608,13 +556,13 @@ public sealed class MainWindow : Window
         var have = latestOfficial?.Name;
         var supported = EngineKit.OfficialMatches(game!, latestOfficial);
         var waitingFor = (supported ? null : CheckFiles(latestOfficial?.GameFileList))
-                         ?? "Brawlhalla was updated: Official will update for it soon.";
+                         ?? "Brawlhalla was updated. Official will update for it soon.";
         if (supported) CheckFiles(latestOfficial?.GameFileList);
         var oldKit = installed != null && EngineKit.OfficialOnOldKit(game!);
         main.IsEnabled = !running;
         if (installed != null && EngineKit.Original(game!))
         {
-            Status("Original game", "Brawlhalla.exe is Steam's own. Official is still built: Use Official switches back in seconds.",
+            Status("Original game", "Brawlhalla.exe is Steam's own right now. Use Official switches back in seconds.",
                 "Use Official", Look.Play, () => _ = SwapLauncher(original: false));
             main.IsEnabled = !running;
         }
@@ -638,7 +586,7 @@ public sealed class MainWindow : Window
         else if (have != null && (installed != have || oldKit))
         {
             Status("Update available", !supported ? waitingFor : installed != have ? $"Official {have} is ready."
-                : "Bifrost was updated: Update rebuilds Official on its new engine.", "Update", Look.Refresh, () => _ = Install());
+                : "Bifrost was updated. Press Update to rebuild Official on the new engine.", "Update", Look.Refresh, () => _ = Install());
             main.IsEnabled = supported && !running;
         }
         else if (!EngineKit.InstalledGameMatches(game!, true))
@@ -669,7 +617,7 @@ public sealed class MainWindow : Window
 
     string? Have => latest?.Name;
 
-    static string InstalledText(string? installed) =>
+    internal static string InstalledText(string? installed) =>
         installed is { Length: > 0 } ? installed : installed != null ? "Installed" : "Not installed";
 
     (int Runs, int Errors) RecentRuns()
@@ -677,6 +625,29 @@ public sealed class MainWindow : Window
         if (LogsPage.Docs(game) is not { } docs) return (0, 0);
         var runs = LogsPage.Sessions(docs);
         return (runs.Count, runs.Count(r => r.Name.EndsWith("(errors)", StringComparison.Ordinal)));
+    }
+
+    public static Border Toast()
+    {
+        var text = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 13.5, Foreground = Look.Brush(Look.Text), MaxWidth = 640 };
+        var toast = new Border
+        {
+            Child = text, Background = Look.Brush(Look.Panel), BorderBrush = Look.Brush(Look.Accent), BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10), Padding = new Thickness(16, 10), Margin = new Thickness(0, 0, 0, 24),
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, IsVisible = false,
+        };
+        Grid.SetColumnSpan(toast, 2);
+        var hide = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
+        hide.Tick += (_, _) => { hide.Stop(); toast.IsVisible = false; };
+        toast.PointerPressed += (_, _) => { hide.Stop(); toast.IsVisible = false; };
+        Ui.Said += said => Ui.OnUi(() =>
+        {
+            text.Text = said;
+            toast.IsVisible = true;
+            hide.Stop();
+            hide.Start();
+        });
+        return toast;
     }
 
     void Status(string head, string sub, string button, string icon, Action action)
@@ -697,11 +668,11 @@ public sealed class MainWindow : Window
         {
             if (serverWasRunning) await HostedServer.StopAsync();
             await Task.Run(() => EngineKit.Clean(kit: latest != null, officialLayer: official && latestOfficial != null));
-            log.Append("Clean rebuild: removed the work folder and the downloaded files; downloading and building again.");
+            log.Append("Clean rebuild: removed the build folder and the downloads. Downloading and building again.");
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            detail.Text = $"Couldn't clear Bifrost's files: {e.Message} Close anything started from the app and try again.";
+            detail.Text = $"Couldn't clear Bifrost's files. Close anything started from the app and try again. {e.Message}";
             return;
         }
         await Install(fresh: true);
@@ -722,6 +693,14 @@ public sealed class MainWindow : Window
             project.Settings.Save();
         }
         var updating = isOfficial ? EngineKit.OfficialInstalled(game) != null : EngineKit.Installed(game) != null;
+        if (InstallPlace.NeedsAsking(project.Settings, game, updating || EngineKit.EngineInstalled(game)))
+        {
+            if (await AskInstallPlace() is not { } place) return;
+            project.Settings.InstallPlace = place;
+            project.Settings.Save();
+            if (place == InstallPlace.Own && !await CopyGame(game, BifrostFolders.Game, game)) return;
+            if (game == null) return;
+        }
         working = true;
         cancel = new CancellationTokenSource();
         log.Clear();
@@ -809,7 +788,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception e) when (e is IOException or HttpRequestException or UnauthorizedAccessException or InvalidOperationException)
         {
-            SetButtonText(appUpdate, "App update failed: try again");
+            SetButtonText(appUpdate, "App update failed. Try again");
             appUpdate.IsEnabled = true;
         }
     }
@@ -870,7 +849,7 @@ public sealed class MainWindow : Window
             working = false;
             Refresh();
             Show("settings");
-            Notify("Official removed", "Bifrost is the mode again. Official's saves are kept.", NotificationType.Information);
+            Notify("Official removed", "You're back on Bifrost. Official's saves are kept.", NotificationType.Information);
         }
     }
 
@@ -880,7 +859,7 @@ public sealed class MainWindow : Window
         if (!everythingArmed)
         {
             everythingArmed = true;
-            DispatcherTimer.RunOnce(() => { everythingArmed = false; if (page.Content is ScrollViewer) Show("settings"); }, TimeSpan.FromSeconds(4));
+            DispatcherTimer.RunOnce(() => { everythingArmed = false; if (current == "settings") Show("settings"); }, TimeSpan.FromSeconds(4));
             Show("settings");
             return;
         }
@@ -898,7 +877,7 @@ public sealed class MainWindow : Window
             working = false;
             Refresh();
             Show("home");
-            Notify("Everything removed", "Bifrost, its saves and its files are gone. Delete this app like any file.", NotificationType.Information);
+            Notify("Everything removed", "Bifrost, its saves and its files are gone. You can delete this app now.", NotificationType.Information);
         }
     }
 
@@ -940,7 +919,13 @@ public sealed class MainWindow : Window
                 return;
             }
         }
-        var from = game ?? steam;
+        if (!await CopyGame(steam, target!, game ?? steam)) return;
+        Notify("Separate copy ready", "Steam's updates won't change this copy. Install Bifrost or Official on it, and use Update from Steam in Settings to bring it up to date.",
+            NotificationType.Information);
+    }
+
+    async Task<bool> CopyGame(string steam, string target, string from)
+    {
         working = true;
         Show("home");
         title.Text = "Copying Brawlhalla";
@@ -948,8 +933,8 @@ public sealed class MainWindow : Window
         var failed = false;
         try
         {
-            await GameCopy.MakeAsync(steam, target!, p => Dispatcher.UIThread.Post(() => detail.Text = $"{p:P0} of {steam}"), CancellationToken.None);
-            GameCopy.CarrySaves(from, target!);
+            await GameCopy.MakeAsync(steam, target, p => Dispatcher.UIThread.Post(() => detail.Text = $"{p:P0} of {steam}"), CancellationToken.None);
+            GameCopy.CarrySaves(from, target);
         }
         catch (Exception e) when (e is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
@@ -964,11 +949,87 @@ public sealed class MainWindow : Window
         if (failed)
         {
             Refresh();
-            return;
+            return false;
         }
-        UseFolder(target!);
+        UseFolder(target);
         Show("home");
-        Notify("Separate copy ready", "Steam's updates won't change this copy. Install Bifrost or Official on it; Update from Steam in Settings brings it up to date.",
-            NotificationType.Information);
+        return true;
+    }
+
+    async Task<string?> AskInstallPlace()
+    {
+        string? chosen = null;
+        var dialog = new Window
+        {
+            Title = "Where to install Bifrost", Width = 560, SizeToContent = SizeToContent.Height, CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner, Background = Look.Brush(Look.Panel),
+        };
+        Control Choice(string place, string head, string icon)
+        {
+            var button = Look.Secondary(head, icon, () => { chosen = place; dialog.Close(); });
+            return new StackPanel
+            {
+                Spacing = 6,
+                Children =
+                {
+                    button,
+                    new TextBlock { Text = InstallPlace.Describe(place), TextWrapping = TextWrapping.Wrap, FontSize = 13, Foreground = Look.Brush(Look.Dim) },
+                },
+            };
+        }
+        dialog.Content = new StackPanel
+        {
+            Margin = new Thickness(26), Spacing = 16,
+            Children =
+            {
+                new TextBlock { Text = "Where should Bifrost go?", FontSize = 22, FontWeight = FontWeight.Bold, Foreground = Look.Brush(Look.Text) },
+                Choice(InstallPlace.Steam, "Install on Steam", Look.Play),
+                Choice(InstallPlace.Own, "Install in its own folder", Look.Folder),
+                new TextBlock
+                {
+                    Text = "Either way, Bifrost's engine, saves and settings stay out of Steam's folder. "
+                           + "You can switch later under Advanced in the gear menu.",
+                    TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = Look.Brush(Look.Dim),
+                },
+                Row(Look.Secondary("Cancel", Look.Stop, () => dialog.Close())),
+            },
+        };
+        await dialog.ShowDialog(this);
+        return chosen;
+    }
+
+    async Task<string?> SwitchPlace()
+    {
+        if (game == null || working) return "Wait for the app to finish what it's doing.";
+        if (GameFinder.GameRunning()) return "Close Brawlhalla first.";
+        if (GameFinder.SteamInstall() is not { } steam) return "Steam's Brawlhalla wasn't found.";
+        var to = InstallPlace.Of(game) == InstallPlace.Steam ? InstallPlace.Own : InstallPlace.Steam;
+        var installed = EngineKit.EngineInstalled(game);
+        if (installed && !engine.PlacesEngine) return "Switching needs a newer Bifrost release. Update first, then try again.";
+        if (installed)
+        {
+            working = true;
+            try { await engine.RemoveAsync(game, log.Append); }
+            catch (Exception e) when (e is InvalidOperationException or IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            {
+                log.Append(e.Message);
+                return e.Message;
+            }
+            finally
+            {
+                working = false;
+                Refresh();
+            }
+        }
+        project.Settings.InstallPlace = to;
+        project.Settings.Save();
+        FolderMigration.Log($"switching the install from {game} to {(to == InstallPlace.Own ? BifrostFolders.Game : steam)}");
+        if (to == InstallPlace.Own)
+        {
+            if (!await CopyGame(steam, BifrostFolders.Game, game)) return "The copy didn't finish. See Logs for why. Bifrost was taken out of Steam's folder, and Install puts it back.";
+        }
+        else UseFolder(steam);
+        if (installed) await Install();
+        return null;
     }
 }

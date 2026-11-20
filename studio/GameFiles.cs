@@ -16,7 +16,7 @@ public static class GameFiles
     static string? lastGame, lastStamp, lastFingerprint;
     static SortedDictionary<string, string>? lastListing;
 
-    static string CachePath => Path.Combine(EngineKit.Home, "game-files-cache.json");
+    static string CachePath => BifrostFolders.CurrentFile(BifrostFolders.GameFilesCache, BifrostFolders.OldGameFilesCache);
 
     static bool GameFile(string name) => Suffixes.Any(s => name.EndsWith(s, StringComparison.OrdinalIgnoreCase));
 

@@ -20,6 +20,11 @@ public sealed class ServerPage : UserControl
     readonly FileTail tail = new();
     readonly Grid addresses = new() { ColumnDefinitions = new ColumnDefinitions("130,Auto,Auto"), RowSpacing = 4, Margin = new Thickness(0, 4, 0, 0) };
     readonly ContentControl settings = new();
+    readonly StackPanel sectionBar = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
+    readonly DockPanel body = new();
+    ServerTools? tools;
+    string section = "console";
+    (bool Running, bool Ready)? toolsState;
     DateTime addressesAt = DateTime.MinValue;
     DateTime forceArmedUntil = DateTime.MinValue;
     string? forceNote;
@@ -33,27 +38,67 @@ public sealed class ServerPage : UserControl
         var card = Look.Card("Your server", Look.Server, hostValue, hostSub, new StackPanel { Children = { addresses, download, buttons } });
         var top = new StackPanel
         {
-            Spacing = 16, MaxWidth = 820, HorizontalAlignment = HorizontalAlignment.Left,
-            Children = { new TextBlock { Text = "Server", FontSize = 30, FontWeight = FontWeight.Bold, Foreground = Look.Brush(Look.Text) }, card, settings, logHead },
+            Spacing = 16, MaxWidth = 1100, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 12),
+            Children = { new TextBlock { Text = "Server", FontSize = 30, FontWeight = FontWeight.Bold, Foreground = Look.Brush(Look.Text) }, card, sectionBar },
         };
         DockPanel.SetDock(top, Dock.Top);
-        Content = new DockPanel { Children = { top, log } };
+        Content = new DockPanel { Children = { top, body } };
         var timer = new DispatcherTimer(TimeSpan.FromSeconds(1.5), DispatcherPriority.Background, (_, _) => { Refresh(); ShowLog(); });
         AttachedToVisualTree += (_, _) => { timer.Start(); Refresh(); ShowLog(); };
         DetachedFromVisualTree += (_, _) => timer.Stop();
+    }
+
+    void ShowSection(string key)
+    {
+        section = key;
+        sectionBar.Children.Clear();
+        foreach (var (k, name, icon) in ServerTools.Sections)
+        {
+            var b = Look.Nav(name, icon, () => ShowSection(k));
+            b.Padding = new Thickness(12, 6);
+            b.Classes.Set("selected", k == section);
+            sectionBar.Children.Add(b);
+        }
+        tools ??= new ServerTools(new ServerToolsHooks(HostedServer.Folder, () => HostedServer.Running, () => HostedServer.ConsoleReady, () => DateTime.Now,
+            HostedServer.StopAsync, f => Ui.OpenFile(f), d => Ui.Open(d, create: true), () => engine.Python));
+        tools.Show(key);
+        toolsState = (HostedServer.Running, HostedServer.ConsoleReady);
+        foreach (var c in new Control[] { settings, logHead, log, tools }) (c.Parent as Panel)?.Children.Remove(c);
+        body.Children.Clear();
+        if (key == "console")
+        {
+            var head = new StackPanel { Spacing = 10, MaxWidth = 1100, HorizontalAlignment = HorizontalAlignment.Left, Children = { tools, logHead } };
+            DockPanel.SetDock(head, Dock.Top);
+            body.Children.Add(head);
+            body.Children.Add(log);
+        }
+        else if (key == "settings")
+        {
+            var head = new StackPanel { MaxWidth = 820, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 12), Children = { settings } };
+            DockPanel.SetDock(head, Dock.Top);
+            body.Children.Add(head);
+            body.Children.Add(tools);
+        }
+        else body.Children.Add(tools);
     }
 
     void Refresh()
     {
         if (busy) return;
         buttons.Children.Clear();
-        log.IsVisible = logHead.IsVisible = HostedServer.Downloaded;
+        sectionBar.IsVisible = body.IsVisible = HostedServer.Downloaded;
         if (!HostedServer.Downloaded) settings.Content = null;
         else if (settings.Content == null) settings.Content = SettingsCard();
+        if (HostedServer.Downloaded && tools == null) ShowSection(section);
+        else if (tools != null && toolsState != (HostedServer.Running, HostedServer.ConsoleReady))
+        {
+            toolsState = (HostedServer.Running, HostedServer.ConsoleReady);
+            tools.Rebuild();
+        }
         if (!HostedServer.Downloaded)
         {
             hostValue.Text = "Not installed";
-            hostSub.Text = engine.Python == null ? "Install Bifrost first: the server runs on its tools."
+            hostSub.Text = engine.Python == null ? "Install Bifrost first. The server runs on its tools."
                 : release()?.ServerPackage == null ? "Not in this release." : "";
             var get = Look.Secondary("Download server", Look.Download, () => _ = Download());
             get.IsEnabled = release()?.ServerPackage != null && engine.Python != null;
@@ -89,7 +134,7 @@ public sealed class ServerPage : UserControl
             buttons.Children.Add(start);
             if (newer) buttons.Children.Add(Look.Secondary("Update", Look.Refresh, () => _ = Download()));
         }
-        buttons.Children.Add(Look.Secondary("Open folder", Look.Folder, () => Ui.Open(HostedServer.Folder)));
+        buttons.Children.Add(Look.Secondary("Open folder", Look.Folder, () => Ui.Open(HostedServer.Folder, missing: "The server isn't installed on this PC yet. Download it first.")));
     }
 
     Control SettingsCard()
@@ -121,7 +166,7 @@ public sealed class ServerPage : UserControl
 
         async Task Save()
         {
-            if (!int.TryParse(port.Text, out var p) || p is < 1024 or > 65534) { state.Text = "Port: 1024-65534"; return; }
+            if (!int.TryParse(port.Text, out var p) || p is < 1024 or > 65534) { state.Text = "Use a port from 1024 to 65534."; return; }
             HostedServer.SetSettings(name.Text?.Trim(), p, id.Text?.Trim(), secret.Text?.Trim(), url.Text?.Trim());
             if (game() is { } g) EngineKit.AddOwnServer(g);
             if (HostedServer.Running && engine.Python != null)
@@ -183,7 +228,7 @@ public sealed class ServerPage : UserControl
     {
         var port = HostedServer.Port;
         var armed = DateTime.Now < forceArmedUntil;
-        return Look.Secondary(armed ? $"Click again: stop {HostedServer.PortUserNames(port)}" : $"Force stop port {port}", Look.Stop, () =>
+        return Look.Secondary(armed ? $"Click again to stop {HostedServer.PortUserNames(port)}" : $"Force stop port {port}", Look.Stop, () =>
         {
             if (DateTime.Now >= forceArmedUntil)
             {

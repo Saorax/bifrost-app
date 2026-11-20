@@ -9,11 +9,11 @@ public sealed class EngineKit(Project project)
 {
     public const string Marker = "bifrost-engine.json";
 
-    public static string Home => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bifrost");
+    public static string Home => BifrostFolders.Home;
 
-    static string Downloaded => Path.Combine(Home, "kit");
-    static string OfficialLayer => Path.Combine(Home, "official");
-    static string Work => Path.Combine(Home, "engine-work");
+    static string Downloaded => BifrostFolders.Current(BifrostFolders.Kit, BifrostFolders.OldKit);
+    static string OfficialLayer => BifrostFolders.Current(BifrostFolders.OfficialLayer, BifrostFolders.OldOfficialLayer);
+    public static string Work => BifrostFolders.Current(BifrostFolders.Work, BifrostFolders.OldWork);
 
     public static void Clean(bool kit, bool officialLayer)
     {
@@ -40,6 +40,18 @@ public sealed class EngineKit(Project project)
 
     public string? Folder => File.Exists(Path.Combine(Downloaded, "player_engine.py")) ? Downloaded : null;
 
+    public bool PlacesEngine
+    {
+        get
+        {
+            try
+            {
+                return Folder is { } kit && File.ReadAllText(Path.Combine(kit, "tools", "port_steam_install.py")).Contains("def player_engine_dir(");
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
+        }
+    }
+
     public string? Python => Folder is { } kit && Path.Combine(kit, "python", "python.exe") is var python && File.Exists(python)
         ? python : null;
 
@@ -56,6 +68,23 @@ public sealed class EngineKit(Project project)
     }
 
     static JsonNode? ReadMarker(string game) => ReadJson(MarkerPath(game));
+
+    static string? MarkerFolder(string game, string key)
+    {
+        try { return (string?)ReadMarker(game)?[key] is { Length: > 0 } dir ? Path.GetFullPath(dir) : null; }
+        catch (Exception) { return null; }
+    }
+
+    public static string? SavesDir(string game) => MarkerFolder(game, "saves_dir");
+
+    public static string? CacheDir(string game) => MarkerFolder(game, "cache_dir");
+
+    public static string Storage(string game, bool official = false) =>
+        SavesDir(game) is { } saves ? Path.Combine(saves, official ? "Official" : "Bifrost")
+            : Path.Combine(EngineDir(game), official ? "storage-official" : "storage");
+
+    public static string? GameDocuments(string game) =>
+        SavesDir(game) != null ? BifrostFolders.Documents : AppPaths.Newest(Path.Combine(EngineDir(game), "storage"), "Documents", "Bifrost");
 
     static string? LauncherTail(string game)
     {
@@ -84,7 +113,7 @@ public sealed class EngineKit(Project project)
                    || ((string?)ReadMarker(game)?["stub_sha256"] is { } hash && File.Exists(exe) && FileSha256(exe) == hash);
         if (!stub) return exe;
         return new[] { EngineDir(game), game }.Select(d => Path.Combine(d, "Brawlhalla.exe.bifrost-original")).FirstOrDefault(File.Exists)
-               ?? throw new InvalidOperationException("Brawlhalla's own Brawlhalla.exe is missing: verify the game files in Steam, then try again.");
+               ?? throw new InvalidOperationException("Brawlhalla's own Brawlhalla.exe is missing. Verify the game files in Steam, then try again.");
     }
 
     static bool SameFolder(string a, string b) =>
@@ -218,6 +247,10 @@ public sealed class EngineKit(Project project)
         catch (Exception) { return false; }
     }
 
+    public static string? InstalledVersion(string game) => (string?)ReadMarker(game)?["version"] is { Length: > 0 } v ? v : null;
+
+    public static string? InstalledGameFiles(string game) => (string?)ReadMarker(game)?["game_files"];
+
     public static bool InstalledGameMatches(string game, bool official)
     {
         var want = official ? (string?)ReadMarker(game)?["official"]?["game_files"] : (string?)ReadMarker(game)?["game_files"];
@@ -232,14 +265,14 @@ public sealed class EngineKit(Project project)
     {
         if (game == null || list == null) return null;
         if (GameFiles.Differences(game, list) is not { } differ)
-            return "Can't read Brawlhalla's files: close anything that has them open (or an antivirus scan) and try again.";
+            return "Can't read Brawlhalla's files. Close anything that has them open, like an antivirus scan, and try again.";
         var core = differ.Where(GameFiles.Core).ToList();
         if (core.Count > 0)
-            return $"Brawlhalla's game code isn't the version this release is for (changed: {GameFiles.Describe(core)}). "
-                   + "If Steam just updated, a new release comes soon; if not, verify the game files in Steam.";
+            return $"Brawlhalla's game code doesn't match this release. Changed: {GameFiles.Describe(core)}. "
+                   + "If Steam just updated, a new release is coming soon. If not, verify the game files in Steam.";
         return differ.Count > 0
-            ? $"Not Steam's current files: {GameFiles.Describe(differ)} (a mod, or a skipped Steam update). "
-              + "The build doesn't use them; if they look wrong in game, verify the game files in Steam."
+            ? $"These files don't match Steam's, maybe from a mod or a skipped update: {GameFiles.Describe(differ)}. "
+              + "The build skips them. If they look wrong in game, verify the game files in Steam."
             : null;
     }
 
@@ -286,7 +319,7 @@ public sealed class EngineKit(Project project)
             throw new InvalidOperationException("Official isn't available for this Brawlhalla version yet. It will update for it soon.");
         if (DownloadSize(kitRelease) > 0) await EnsureAsync(kitRelease!.Kit, Downloaded, download, unpacking, cancel);
         if (OfficialLayerRelease() != official.Name) await EnsureAsync(official.Package, OfficialLayer, download, unpacking, cancel);
-        var kit = Folder ?? throw new InvalidOperationException("The engine kit is missing: install Bifrost's kit first.");
+        var kit = Folder ?? throw new InvalidOperationException("The engine kit is missing. Install Bifrost first.");
         var code = await RunDriverAsync(kit, ["official", "--game", game, "--work", Work, "--layer", OfficialLayer], text =>
         {
             line(text);
@@ -324,8 +357,9 @@ public sealed class EngineKit(Project project)
     {
         var storage = Path.Combine(EngineDir(game), "storage");
         var app = Directory.Exists(storage) ? Directory.GetDirectories(storage, "BhPort*").FirstOrDefault() : null;
-        if (app == null) return;
-        var path = Path.Combine(app, "Documents", "Bifrost", "bh-mod-settings.json");
+        var docs = SavesDir(game) != null ? BifrostFolders.Documents : app == null ? null : Path.Combine(app, "Documents", "Bifrost");
+        if (docs == null) return;
+        var path = DocsLayout.File(docs, "bh-mod-settings.json");
         try
         {
             var settings = (File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path)) as JsonObject : null) ?? new JsonObject();
@@ -354,6 +388,14 @@ public sealed class EngineKit(Project project)
         string[] args = [original ? "original" : "launcher", "--game", game, "--work", Work];
         if (await RunDriverAsync(kit, args, log, CancellationToken.None) != 0)
             throw new InvalidOperationException(lastFailure ?? "Couldn't swap Brawlhalla.exe.");
+    }
+
+    public async Task MoveEngineAsync(string game, string to, Action<string> log)
+    {
+        var kit = Folder ?? throw new InvalidOperationException("Bifrost's files are missing.");
+        string[] args = ["move-engine", "--game", game, "--work", Work, "--to", to];
+        if (await RunDriverAsync(kit, args, log, CancellationToken.None) != 0)
+            throw new InvalidOperationException(lastFailure ?? "Couldn't move the engine folder.");
     }
 
     public async Task RemoveAsync(string game, Action<string> log, bool purge = false)

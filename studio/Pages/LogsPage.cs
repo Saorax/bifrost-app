@@ -27,7 +27,7 @@ public sealed class LogsPage : UserControl
         if (game != null)
         {
             var engine = EngineKit.EngineDir(game);
-            var official = Path.Combine(engine, "storage-official");
+            var official = EngineKit.Storage(game, true);
             if (Directory.Exists(official) && Directory.GetFiles(official, "bh-*.txt").Length > 0)
                 runDirs.Insert(Math.Min(2, runDirs.Count), (Mark("Official latest run", official), official));
             var engineLogs = Path.Combine(engine, "logs");
@@ -41,7 +41,7 @@ public sealed class LogsPage : UserControl
         var top = new StackPanel
         {
             Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 0, 0, 10),
-            Children = { runs, files, Look.Link("Folder", Look.Folder, () => Ui.Open(Dir ?? EngineKit.Home)), save },
+            Children = { runs, files, Look.Link("Folder", Look.Folder, () => Ui.Open(Dir ?? EngineKit.Home, create: true)), save },
         };
         var heading = new TextBlock { Text = "Logs", FontSize = 30, FontWeight = Avalonia.Media.FontWeight.Bold, Foreground = Look.Brush(Look.Text), Margin = new Thickness(0, 0, 0, 14) };
         DockPanel.SetDock(heading, Dock.Top);
@@ -56,31 +56,11 @@ public sealed class LogsPage : UserControl
 
     static ComboBox Combo(double width) => new() { MinWidth = width, VerticalAlignment = VerticalAlignment.Center };
 
-    public static string? Docs(string? game)
-    {
-        var storage = game == null ? null : Path.Combine(EngineKit.EngineDir(game), "storage");
-        return storage != null && Directory.Exists(storage)
-            ? Directory.GetDirectories(storage).Select(d => Path.Combine(d, "Documents", "Bifrost")).Where(Directory.Exists)
-                .OrderByDescending(Directory.GetLastWriteTimeUtc).FirstOrDefault()
-            : null;
-    }
+    public static string? Docs(string? game) =>
+        game == null ? null : EngineKit.GameDocuments(game) is { } docs && Directory.Exists(docs) ? docs : null;
 
-    public static List<(string Name, string Dir)> Sessions(string docs)
-    {
-        var list = new List<(string, string)>();
-        if (Directory.GetFiles(docs, "bh-*.txt").Length > 0) list.Add((Mark("Bifrost latest run", docs), docs));
-        var logs = Path.Combine(docs, "logs");
-        if (Directory.Exists(logs))
-        {
-            foreach (var dir in Directory.GetDirectories(logs).OrderByDescending(Path.GetFileName, StringComparer.Ordinal))
-            {
-                var name = Path.GetFileName(dir);
-                var at = name.IndexOf('_');
-                list.Add((Mark(at > 0 ? name[..at] + "  " + name[(at + 1)..].Replace('-', ':') : name, dir), dir));
-            }
-        }
-        return list;
-    }
+    public static List<(string Name, string Dir)> Sessions(string docs) =>
+        DocsLayout.Runs(docs).Select(r => (Mark(r.Label == "latest run" ? "Bifrost latest run" : r.Label, r.Dir), r.Dir)).ToList();
 
     static string Mark(string name, string dir) => HasErrors(dir) ? name + "   (errors)" : name;
 
@@ -144,7 +124,7 @@ public sealed class LogsPage : UserControl
             }
             if (count == 0)
             {
-                Say("No logs to save yet: run the game first.");
+                Say("No logs to save yet. Run the game first.");
                 return;
             }
             Say($"Saved {count} files to {path}.");

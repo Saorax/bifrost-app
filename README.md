@@ -43,8 +43,12 @@ GitHub has no Brawlhalla install to read the icon from, so the workflow uses the
 
 ## Where it keeps things
 
-- `%LOCALAPPDATA%\Bifrost`: the kit, downloads and the hosted server
-- `%APPDATA%\BifrostStudio\settings.json`: the app's settings
+- `%LOCALAPPDATA%\Bifrost\Engine`: the engine, its saves and Steam's own `Brawlhalla.exe` (Steam's game folder
+  keeps only Bifrost's `Brawlhalla.exe` and, for now, the `mods` folder; an engine left there by an older version is
+  moved here when the app starts)
+- `%LOCALAPPDATA%\Bifrost\Game`: the copy of the game when Bifrost is installed in its own folder
+- `%LOCALAPPDATA%\Bifrost\Studio`: the app's settings (moved from `%APPDATA%\BifrostStudio`)
+- `%LOCALAPPDATA%\Bifrost`: also the kit, downloads and the hosted server
 
 ## License
 

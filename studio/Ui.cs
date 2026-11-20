@@ -87,7 +87,7 @@ public sealed class FileTail(int tailBytes = 256 * 1024)
         {
             if (lastLength == -2) return null;
             lastLength = -2;
-            return $"(no file yet: {path})";
+            return $"No file yet at {path}.";
         }
         if (file.Length == lastLength && file.LastWriteTimeUtc == lastWrite) return null;
         lastLength = file.Length;
@@ -119,27 +119,89 @@ public static class Ui
 
     public static void OnUi(Action action) => Dispatcher.UIThread.Post(action);
 
-    public static void Open(string? dir)
+    public static event Action<string>? Said;
+
+    public static Func<System.Diagnostics.ProcessStartInfo, bool> Starter { get; set; } = start =>
     {
-        if (dir == null || !Directory.Exists(dir)) return;
+        System.Diagnostics.Process.Start(start)?.Dispose();
+        return true;
+    };
+
+    public static void Say(string text) => Said?.Invoke(text);
+
+    public static bool Open(string? dir, bool create = false, string? missing = null)
+    {
+        if (string.IsNullOrWhiteSpace(dir))
+        {
+            Say(missing ?? "Brawlhalla wasn't found, so that folder isn't known yet.");
+            return false;
+        }
+        if (!Directory.Exists(dir))
+        {
+            if (!create)
+            {
+                Say(missing ?? $"That folder isn't there: {dir}");
+                return false;
+            }
+            if (AppPaths.InOldEngineStorage(dir))
+            {
+                Say(AppPaths.OldStorageNote);
+                return false;
+            }
+            try { Directory.CreateDirectory(dir); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                Say($"Couldn't make {dir}: {e.Message}");
+                return false;
+            }
+        }
         var opener = OperatingSystem.IsWindows() ? "explorer" : OperatingSystem.IsMacOS() ? "open" : "xdg-open";
-        try { System.Diagnostics.Process.Start(opener, dir)?.Dispose(); }
-        catch (Exception) { }
+        return Start(new System.Diagnostics.ProcessStartInfo(opener, [dir]), dir);
     }
 
-    public static void Reveal(string file)
+    public static bool OpenFile(string file)
     {
-        if (!File.Exists(file)) return;
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+        if (!File.Exists(file))
         {
-            Open(Path.GetDirectoryName(file));
-            return;
+            Say($"That file isn't there any more: {file}");
+            return false;
         }
+        return Start(new System.Diagnostics.ProcessStartInfo(file) { UseShellExecute = true }, file);
+    }
+
+    public static bool Reveal(string file)
+    {
+        if (!File.Exists(file))
+        {
+            var dir = Path.GetDirectoryName(file);
+            if (dir != null && Directory.Exists(dir))
+            {
+                Say($"{file} isn't there any more. Opening its folder instead.");
+                return Open(dir);
+            }
+            Say($"That file isn't there any more: {file}");
+            return false;
+        }
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) return Open(Path.GetDirectoryName(file));
         var start = OperatingSystem.IsWindows()
             ? new System.Diagnostics.ProcessStartInfo("explorer", $"/select,\"{file}\"")
             : new System.Diagnostics.ProcessStartInfo("open", ["-R", file]);
-        try { System.Diagnostics.Process.Start(start)?.Dispose(); }
-        catch (Exception) { }
+        return Start(start, file);
+    }
+
+    static bool Start(System.Diagnostics.ProcessStartInfo start, string what)
+    {
+        try
+        {
+            if (Starter(start)) return true;
+        }
+        catch (Exception e)
+        {
+            Say($"Couldn't open {what}: {e.Message}");
+            return false;
+        }
+        Say($"Couldn't open {what}.");
+        return false;
     }
 
     public static void Browse(string? url)

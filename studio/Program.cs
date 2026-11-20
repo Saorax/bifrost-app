@@ -23,7 +23,12 @@ public sealed class App : Application
     public override void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            FolderMigration.MoveStudioFiles();
+            FolderMigration.PruneEngineIndex();
+            FolderMigration.MoveBuildFolders();
             desktop.MainWindow = new MainWindow(Project.Find());
+        }
         base.OnFrameworkInitializationCompleted();
     }
 }
