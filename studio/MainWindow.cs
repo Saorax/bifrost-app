@@ -124,12 +124,14 @@ public sealed class MainWindow : Window
         Show("home");
         Refresh();
         AppUpdate.CleanUp();
+        Closed += (_, _) => OldVersions.Job.Stop();
         Opened += async (_, _) =>
         {
             notes = new WindowNotificationManager(this) { Position = NotificationPosition.TopRight, MaxItems = 2 };
             await PauseOfficial();
             await MoveEngineOut();
             await CheckOnline();
+            if (OldVersions.KeepAll && await OldVersions.EnsurePackAsync() == null && OldVersions.Missing().Count > 0) OldVersions.Job.GetAll();
         };
         new DispatcherTimer(TimeSpan.FromMinutes(30), DispatcherPriority.Background, (_, _) => { if (!working) _ = CheckOnline(); }).Start();
         new DispatcherTimer(TimeSpan.FromSeconds(3), DispatcherPriority.Background, (_, _) =>

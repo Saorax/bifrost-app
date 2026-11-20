@@ -31,7 +31,6 @@ public sealed class ReplayView : IDisposable
     public static readonly TimeSpan HarnessConnectTimeout = TimeSpan.FromSeconds(60);
     HarnessCopy? harness;
     string? jobId;
-    volatile bool noted;
     TcpListener? listener;
     NetworkStream? socket;
     Process? process;
@@ -154,7 +153,6 @@ public sealed class ReplayView : IDisposable
                     var note = JsonDocument.Parse(text).RootElement.Clone();
                     if (note.TryGetProperty("state", out var s) && s.GetString() is { } state) State = state;
                     if (note.TryGetProperty("error", out var err)) Error = err.ToString();
-                    noted = true;
                     Note?.Invoke(note);
                     continue;
                 }

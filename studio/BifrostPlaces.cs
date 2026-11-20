@@ -26,7 +26,55 @@ public static class BifrostPlaces
         return list;
     }
 
-    public static long Size(string path)
+    public static long Size(string path) => OperatingSystem.IsWindows() && DiskSize(path) is { } once ? once : Walk(path);
+
+    static long? DiskSize(string root)
+    {
+        if (!Directory.Exists(root)) return null;
+        var seen = new HashSet<long>();
+        var stack = new Stack<string>();
+        stack.Push(root);
+        var buffer = new byte[64 * 1024];
+        long total = 0;
+        var opened = false;
+        while (stack.Count > 0)
+        {
+            var dir = stack.Pop();
+            using var handle = CreateFileW(dir, 1, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+            if (handle.IsInvalid) continue;
+            opened = true;
+            var kind = 11;
+            while (GetFileInformationByHandleEx(handle, kind, buffer, buffer.Length))
+            {
+                kind = 10;
+                for (var at = 0; ; )
+                {
+                    var next = BitConverter.ToInt32(buffer, at);
+                    var size = BitConverter.ToInt64(buffer, at + 40);
+                    var attributes = BitConverter.ToUInt32(buffer, at + 56);
+                    var nameLength = BitConverter.ToInt32(buffer, at + 60);
+                    var id = BitConverter.ToInt64(buffer, at + 96);
+                    var name = System.Text.Encoding.Unicode.GetString(buffer, at + 104, nameLength);
+                    if (name != "." && name != ".." && (attributes & 0x400) == 0)
+                    {
+                        if ((attributes & 0x10) != 0) stack.Push(System.IO.Path.Combine(dir, name));
+                        else if (seen.Add(id)) total += size;
+                    }
+                    if (next == 0) break;
+                    at += next;
+                }
+            }
+        }
+        return opened ? total : null;
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandleEx(Microsoft.Win32.SafeHandles.SafeFileHandle handle, int infoClass, byte[] buffer, int size);
+
+    static long Walk(string path)
     {
         long total = 0;
         var stack = new Stack<DirectoryInfo>();

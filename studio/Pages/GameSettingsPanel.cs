@@ -212,6 +212,60 @@ public sealed class GameSettingsPanel : UserControl
         var qualities = GameSettings.ExportQualities.Contains(quality) ? GameSettings.ExportQualities : GameSettings.ExportQualities.Append(quality).Order().ToArray();
         Row("Video quality", "Higher looks better and makes bigger files.",
             Choice(qualities, quality, n => n + "%", v => Saved(settings.SetExportQuality(v))));
+        OldVersionRows();
+    }
+
+    readonly StageBar oldBar = new(300);
+    bool[,]? oldCode;
+    string? oldRunning;
+    bool oldHooked;
+
+    void OldVersionRows()
+    {
+        if (!oldHooked)
+        {
+            oldHooked = true;
+            OldVersions.Job.Changed += () => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                if (section != "replays" || !IsVisible) return;
+                if (OldVersions.Job.Running != oldRunning || OldVersions.Job.Code != oldCode) Show("replays");
+                else oldBar.Set(OldVersions.Job.Text, OldVersions.Job.Part);
+            });
+        }
+        oldRunning = OldVersions.Job.Running;
+        oldCode = OldVersions.Job.Code;
+        var all = OldVersions.Index();
+        Group("Old versions", "Replays from older versions play in a copy of that version, downloaded from Steam with your own account.");
+        if (all.Count == 0)
+        {
+            body.Children.Add(Dim("The list of old versions isn't here yet. Open the Replays page while online to get it."));
+            return;
+        }
+        var missing = OldVersions.Missing();
+        var left = missing.Sum(v => v.Bytes);
+        var help = missing.Count == 0 ? $"All {all.Count} versions are on this PC."
+            : $"{all.Count - missing.Count} of {all.Count} versions are on this PC. The rest is about {left / (double)(1L << 30):0} GB from Steam.";
+        Row("Get every old version", help, Toggle(OldVersions.KeepAll, on =>
+        {
+            OldVersions.KeepAll = on;
+            if (on) OldVersions.Job.GetAll();
+            else if (OldVersions.Job.Running == "all") OldVersions.Job.Stop();
+        }));
+        if (OldVersions.Job.Busy)
+        {
+            oldBar.Set(OldVersions.Job.Text, OldVersions.Job.Part);
+            if (oldBar.Parent is Panel holder) holder.Children.Remove(oldBar);
+            oldBar.Margin = new Thickness(0, 6, 0, 0);
+            body.Children.Add(oldBar);
+            if (OldVersions.Job.Code is { } code) body.Children.Add(QrPicture.From(code));
+        }
+        if (OldVersions.Job.Problem is { } problem) body.Children.Add(Dim(problem));
+        if (OldVersions.SteamAccount is { } account)
+            Row("Steam account", $"Old versions download as {account}.", Look.Secondary("Forget", Look.Close, () =>
+            {
+                OldVersions.SteamAccount = null;
+                Show("replays");
+            }));
     }
 
     void Server()

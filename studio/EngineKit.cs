@@ -11,7 +11,7 @@ public sealed class EngineKit(Project project)
 
     public static string Home => BifrostFolders.Home;
 
-    static string Downloaded => BifrostFolders.Current(BifrostFolders.Kit, BifrostFolders.OldKit);
+    public static string Downloaded => BifrostFolders.Current(BifrostFolders.Kit, BifrostFolders.OldKit);
     static string OfficialLayer => BifrostFolders.Current(BifrostFolders.OfficialLayer, BifrostFolders.OldOfficialLayer);
     public static string Work => BifrostFolders.Current(BifrostFolders.Work, BifrostFolders.OldWork);
 

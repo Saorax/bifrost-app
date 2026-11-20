@@ -58,3 +58,36 @@ public static class ReplayBoot
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 }
+
+public static class QrPicture
+{
+    public static Control From(bool[,] code, double size = 220)
+    {
+        const int quiet = 4;
+        var rows = code.GetLength(0);
+        var cols = code.GetLength(1);
+        var w = cols + quiet * 2;
+        var h = rows + quiet * 2;
+        var bitmap = new Avalonia.Media.Imaging.WriteableBitmap(new PixelSize(w, h), new Vector(96, 96), Avalonia.Platform.PixelFormat.Bgra8888, Avalonia.Platform.AlphaFormat.Opaque);
+        using (var fb = bitmap.Lock())
+        {
+            var line = new byte[fb.RowBytes];
+            for (var y = 0; y < h; y++)
+            {
+                for (var x = 0; x < w; x++)
+                {
+                    var dark = y >= quiet && y < quiet + rows && x >= quiet && x < quiet + cols && code[y - quiet, x - quiet];
+                    var v = dark ? (byte)0 : (byte)255;
+                    line[x * 4] = v;
+                    line[x * 4 + 1] = v;
+                    line[x * 4 + 2] = v;
+                    line[x * 4 + 3] = 255;
+                }
+                System.Runtime.InteropServices.Marshal.Copy(line, 0, fb.Address + y * fb.RowBytes, fb.RowBytes);
+            }
+        }
+        var image = new Image { Source = bitmap, Width = size, Height = size * h / w, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left };
+        RenderOptions.SetBitmapInterpolationMode(image, Avalonia.Media.Imaging.BitmapInterpolationMode.None);
+        return image;
+    }
+}

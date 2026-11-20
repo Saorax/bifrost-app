@@ -76,6 +76,7 @@ public sealed class ReplaysPage : UserControl
         this.runner = runner ?? new ReplayRunner(ReplayRunner.PlayerBuildDir);
         StartView = StartRealView;
         PickPlayer = (version, game, current) => ReplayPlayers.For(version, game, this.runner, current);
+        OldVersions.Job.Changed += () => Dispatcher.UIThread.Post(OldVersionChanged);
         KeepPlayer = KeepNow;
         var title = new TextBlock { Text = "REPLAYS", FontSize = 34, FontWeight = FontWeight.Black, Foreground = Look.Brush(Look.Text) };
         var tools = new StackPanel
@@ -328,6 +329,7 @@ public sealed class ReplaysPage : UserControl
         var keep = (list.SelectedItem as ReplayEntry)?.Path;
         library.PlayerVersion = ReplayPlayers.LiveReplayVersion(state.Game);
         KeepPlayer();
+        _ = Task.Run(() => OldVersions.EnsurePackAsync()).ContinueWith(_ => Dispatcher.UIThread.Post(() => ShowDetail(list.SelectedItem as ReplayEntry)));
         Reading = Task.Run(() => library.Load((done, total) => Dispatcher.UIThread.Post(() =>
         {
             if (loading) status.Text = $"Reading your replays... {done} of {total}";
@@ -558,6 +560,8 @@ public sealed class ReplaysPage : UserControl
                     ? "Made by a newer Brawlhalla than your Bifrost. It'll play here once Bifrost is updated to that version."
                     : e.Indexed && OldCopy(e) is { } copy
                     ? $"Made by Brawlhalla {copy.Game}, replay version {e.Version}. WATCH and GET STATS play it in a saved copy of {copy.Game}."
+                    : e.Indexed && OldVersions.For(e.Version) is { } steam
+                    ? $"Made by Brawlhalla {steam.Label}. Get {steam.Label} from Steam to watch it and see its stats. It's about {Megabytes(steam.Bytes)} and uses your own Steam account."
                     : e.Indexed
                     ? $"Made by an older Brawlhalla, replay version {e.Version}. You can see its details below, but there's no copy of that version to play it in yet."
                     : "Made by a much older Brawlhalla that saved replays differently. It can't be read or played.",
@@ -566,6 +570,7 @@ public sealed class ReplaysPage : UserControl
                 "NO PLAYERS" => "Someone quit while the match was loading, so there are no players or map in it.",
                 _ => "This replay can't be read. The file is damaged or didn't finish saving.",
             }));
+        var afterWhy = inner.Children.Count;
         for (var i = 0; i < e.Players.Count; i++) inner.Children.Add(PlayerRow(e, i));
         if (e.Indexed && e.LengthMs > 0)
         {
@@ -589,6 +594,27 @@ public sealed class ReplaysPage : UserControl
         var watch = Big(busyFile == e.File ? "WORKING..." : "WATCH", () => _ = Watch(e, -1));
         var oldCopy = e.Indexed && e.Why == "version" ? OldCopy(e) : null;
         var playable = e.Ok || oldCopy != null || KeptPick(e) != null;
+        if (!playable && e.Indexed && e.Why == "version" && OldVersions.For(e.Version) is { } fromSteam)
+        {
+            var gettingThis = OldVersions.Job.Running == fromSteam.Tag || OldVersions.Job.Running == "all";
+            if (!gettingThis)
+            {
+                var getIt = Big("GET " + fromSteam.Label.ToUpperInvariant(), () => OldVersions.Job.Get(fromSteam));
+                getIt.IsEnabled = !OldVersions.Job.Busy;
+                buttons.Children.Add(getIt);
+            }
+            else
+            {
+                oldBar.Set(OldVersions.Job.Text, OldVersions.Job.Part);
+                if (oldBar.Parent is Panel holder) holder.Children.Remove(oldBar);
+                var getting = new StackPanel { Spacing = 10, Children = { oldBar } };
+                if (OldVersions.Job.Code is { } code) getting.Children.Add(QrPicture.From(code));
+                getting.Children.Add(Look.Link("Stop", Look.Close, OldVersions.Job.Stop));
+                inner.Children.Insert(afterWhy, getting);
+            }
+            if (OldVersions.Job.ProblemFor is { } failed && (failed == fromSteam.Tag || failed == "all") && OldVersions.Job.Problem is { } problem)
+                inner.Children.Insert(afterWhy, Dim(problem));
+        }
         watch.IsEnabled = busyFile == null && playable;
         buttons.Children.Add(watch);
         if (StatsOf(e) is not null) buttons.Children.Add(Big("MATCH STATS", () =>
@@ -1340,6 +1366,25 @@ public sealed class ReplaysPage : UserControl
     static string Join(string sep, params string[] parts) => string.Join(sep, parts.Where(p => !string.IsNullOrEmpty(p)));
 
     static TextBlock Dim(string text) => new() { Text = text, FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Foreground = Look.Brush(Look.Dim) };
+
+    readonly StageBar oldBar = new(300);
+    bool[,]? shownCode;
+    string? shownRunning;
+
+    void OldVersionChanged()
+    {
+        if (list.SelectedItem is not ReplayEntry e || main.Content != body) return;
+        if (OldVersions.Job.Running != shownRunning || OldVersions.Job.Code != shownCode)
+        {
+            shownRunning = OldVersions.Job.Running;
+            shownCode = OldVersions.Job.Code;
+            ShowDetail(e);
+            return;
+        }
+        oldBar.Set(OldVersions.Job.Text, OldVersions.Job.Part);
+    }
+
+    static string Megabytes(long bytes) => bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):0.0} GB" : $"{bytes / (double)(1L << 20):0} MB";
 
     static TextBlock Caption(string text) => new()
     {
