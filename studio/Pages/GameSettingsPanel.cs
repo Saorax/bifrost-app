@@ -10,7 +10,7 @@ namespace BifrostStudio;
 
 public sealed record SettingsActions(Action Close, Action Repair, Func<string, Task<string?>> MoveEngine, Func<bool> Busy,
     Func<Task<string?>>? SwitchPlace = null, Action? CleanRebuild = null, Func<bool>? CanCleanRebuild = null,
-    Action<bool>? UseOriginal = null, Action? ViewLogs = null);
+    Action<bool>? UseOriginal = null, Action? ViewLogs = null, Func<Task<string?>>? DeleteSeparate = null);
 
 public sealed class GameSettingsPanel : UserControl
 {
@@ -130,7 +130,7 @@ public sealed class GameSettingsPanel : UserControl
 
     void Show(string key)
     {
-        if (key != section) copyArmed = false;
+        if (key != section) copyArmed = separateArmed = false;
         section = key;
         foreach (var (k, b) in tabs) b.Classes.Set("selected", k == key);
         heading.Text = Sections.First(s => s.Key == key).Title;
@@ -336,11 +336,20 @@ public sealed class GameSettingsPanel : UserControl
             var switchButton = Look.Secondary(onSteam ? "Use its own folder" : "Use Steam", onSteam ? Look.Folder : Look.Play, () => _ = SwitchTo(switchPlace));
             switchButton.IsEnabled = !settings.State.GameRunning && !actions.Busy() && (onSteam || GameFinder.SteamInstall() != null);
             Row("Installed", InstallPlace.Describe(onSteam ? InstallPlace.Steam : InstallPlace.Own)
-                + (other == InstallPlace.Steam ? " Use Steam moves it to Steam's folder" : " Use its own folder moves it to a copy of the game")
+                + (other == InstallPlace.Steam ? " Use Steam moves it to Steam's folder, deletes the separate copy" : " Use its own folder moves it to a copy of the game")
                 + " and builds Bifrost again in a few minutes. Saves and settings come along.", switchButton);
             var copies = new List<(TextBlock Help, BifrostPlace Place)>();
             CopyRow(copies);
             _ = FillSizes(copies);
+        }
+        if (actions.DeleteSeparate is { } deleteSeparate && GameCopy.IsCopy(game))
+        {
+            var place = new BifrostPlace("Separate install", game!, "Deletes this copy of the game with Bifrost on it. Saves, settings, replays and mods stay, and Steam's game isn't touched.");
+            var help = Dim($"{place.Help}\n{place.Path}");
+            var delete = Look.Secondary(separateArmed ? "Click again to delete" : "Delete", Look.Trash, () => _ = DeleteSeparate(deleteSeparate));
+            delete.IsEnabled = free;
+            Row(place.Name, help, delete);
+            _ = FillSizes([(help, place)]);
         }
         if (actions.ViewLogs is { } viewLogs)
         {
@@ -379,7 +388,7 @@ public sealed class GameSettingsPanel : UserControl
             Row("Clean rebuild", "Downloads and builds everything again from scratch. "
                 + "Try it if Repair didn't help. Saves and settings are kept.", clean);
         }
-        if (actions.UseOriginal is { } useOriginal && game != null && EngineKit.EngineInstalled(game))
+        if (actions.UseOriginal is { } useOriginal && game != null && EngineKit.EngineInstalled(game) && !GameCopy.IsCopy(game))
         {
             var isOriginal = EngineKit.Original(game);
             var swap = Look.Secondary(isOriginal ? "Use Bifrost" : "Use original game", isOriginal ? Look.Play : Look.Folder, () =>
@@ -430,7 +439,23 @@ public sealed class GameSettingsPanel : UserControl
         _ = FillSizes(shown);
     }
 
-    bool copyArmed;
+    bool copyArmed, separateArmed;
+
+    async Task DeleteSeparate(Func<Task<string?>> deleteSeparate)
+    {
+        if (!separateArmed)
+        {
+            separateArmed = true;
+            note.Text = "Click again to delete the separate install. Saves, settings, replays and mods stay.";
+            Show(section);
+            return;
+        }
+        separateArmed = false;
+        note.Text = "Deleting the separate install...";
+        actions.Close();
+        var why = await deleteSeparate();
+        note.Text = why ?? "Deleted the separate install.";
+    }
 
     void CopyRow(List<(TextBlock Help, BifrostPlace Place)> shown)
     {

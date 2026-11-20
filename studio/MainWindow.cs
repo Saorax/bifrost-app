@@ -39,7 +39,7 @@ public sealed class MainWindow : Window
     AppRelease? latestApp { get => state.LatestApp; set => state.LatestApp = value; }
     string? notifiedApp, autoOfficial;
     readonly Dictionary<Product, string?> loggedProblems = [];
-    bool checkedOnline, working, everythingArmed, official;
+    bool checkedOnline, working, everythingArmed, separateArmed, official;
     CancellationTokenSource? cancel;
     Action mainAction = () => { };
     OnlineService? online;
@@ -99,7 +99,7 @@ public sealed class MainWindow : Window
                     return why;
                 },
                 () => _ = CleanRebuild(), () => official ? latestOfficial != null : latest != null,
-                original => _ = SwapLauncher(original), () => Show("logs"))) { IsVisible = false };
+                original => _ = SwapLauncher(original), () => Show("logs"), DeleteSeparateNow)) { IsVisible = false };
         home.AddOverlay(gameSettings);
         state.Changed += gameSettings.Refresh;
         pages.Add("home", "Home", Look.Home, () => home)
@@ -248,7 +248,7 @@ public sealed class MainWindow : Window
         try
         {
             var removed = await Task.Run(() => EngineKit.PauseOfficial(target));
-            var onlyOfficial = target != null && EngineKit.EngineInstalled(target) && EngineKit.Installed(target) == null;
+            var onlyOfficial = target != null && EngineKit.EngineInstalled(target) && EngineKit.Installed(target) == null && !GameCopy.IsCopy(target);
             if (onlyOfficial) await engine.RemoveAsync(target!, log.Append);
             pausedFor = target ?? "";
             if (removed)
@@ -394,7 +394,8 @@ public sealed class MainWindow : Window
         game, game == null ? null : EngineKit.Installed(game), Have, game == null ? null : EngineKit.OfficialInstalled(game),
         latestOfficial?.Name, latestApp?.Name, appUpdate.IsVisible, everythingArmed,
         () => _ = Locate(), () => _ = SwapLauncher(original: true), () => _ = CopyFromSteam(), () => _ = Remove(),
-        () => _ = RemoveOfficial(), () => _ = ShowNotes(Product.App), () => _ = RemoveEverything());
+        () => _ = RemoveOfficial(), () => _ = ShowNotes(Product.App), () => _ = RemoveEverything(),
+        GameCopy.IsCopy(game), separateArmed, () => _ = DeleteSeparate());
 
     internal static StackPanel Row(params Control[] items)
     {
@@ -525,13 +526,17 @@ public sealed class MainWindow : Window
         else if (have != null && installed != have)
         {
             Status("Update available", supported ? $"Bifrost {have} is ready."
+                : GameCopy.IsCopy(game) ? $"Bifrost {have} is out for the newest Brawlhalla. Use Update from Steam in Settings, then Update."
                 : filesNote ?? "Brawlhalla was updated. Bifrost will update for it soon.", "Update", Look.Refresh, () => _ = Install());
             main.IsEnabled = supported && !running;
         }
         else if (!EngineKit.InstalledGameMatches(game, false))
         {
-            Status("Waiting for an update", "Steam updated Brawlhalla. Until Bifrost updates for it, Play starts Brawlhalla's own game.",
-                "Play", Look.Play, () => GameFinder.Play(game));
+            Status("Waiting for an update", GameCopy.IsCopy(game)
+                    ? "This copy's game files changed. Bifrost can be played again once it updates for them."
+                    : "Steam updated Brawlhalla. Bifrost can be played again once it updates for this version.",
+                "Play", Look.Play, () => { });
+            main.IsEnabled = false;
         }
         else
         {
@@ -802,7 +807,7 @@ public sealed class MainWindow : Window
 
     async Task Remove()
     {
-        if (game == null || working || GameFinder.GameRunning()) return;
+        if (game == null || working || GameFinder.GameRunning() || GameCopy.IsCopy(game)) return;
         working = true;
         try { await engine.RemoveAsync(game, log.Append); }
         catch (Exception e) when (e is InvalidOperationException or IOException or System.ComponentModel.Win32Exception) { log.Append(e.Message); }
@@ -818,6 +823,7 @@ public sealed class MainWindow : Window
     async Task SwapLauncher(bool original)
     {
         if (game == null || working || EngineKit.Installed(game) == null) return;
+        if (original && GameCopy.IsCopy(game)) return;
         if (GameFinder.GameRunning()) { detail.Text = "Close Brawlhalla first."; return; }
         working = true;
         try
@@ -842,7 +848,7 @@ public sealed class MainWindow : Window
 
     async Task RemoveOfficial()
     {
-        if (game == null || working || GameFinder.GameRunning()) return;
+        if (game == null || working || GameFinder.GameRunning() || (GameCopy.IsCopy(game) && EngineKit.Installed(game) == null)) return;
         working = true;
         try { await engine.RemoveOfficialAsync(game, log.Append); }
         catch (Exception e) when (e is InvalidOperationException or IOException or System.ComponentModel.Win32Exception) { log.Append(e.Message); }
@@ -868,10 +874,16 @@ public sealed class MainWindow : Window
         everythingArmed = false;
         if (GameFinder.GameRunning()) return;
         working = true;
+        var copy = GameCopy.IsCopy(game) ? game : null;
         try
         {
             if (HostedServer.Running) await HostedServer.StopAsync();
             await engine.RemoveEverythingAsync(game, log.Append);
+            if (copy != null)
+            {
+                await GameCopy.DeleteAsync(copy);
+                ForgetGame();
+            }
         }
         catch (Exception e) when (e is InvalidOperationException or IOException or UnauthorizedAccessException) { log.Append(e.Message); }
         finally
@@ -881,6 +893,64 @@ public sealed class MainWindow : Window
             Show("home");
             Notify("Everything removed", "Bifrost, its saves and its files are gone. You can delete this app now.", NotificationType.Information);
         }
+    }
+
+    async Task DeleteSeparate()
+    {
+        if (game == null || working || !GameCopy.IsCopy(game)) return;
+        if (GameFinder.GameRunning())
+        {
+            Notify("Close Brawlhalla first", "The separate install can't be deleted while the game runs.", NotificationType.Warning);
+            return;
+        }
+        if (!separateArmed)
+        {
+            separateArmed = true;
+            DispatcherTimer.RunOnce(() => { separateArmed = false; if (current == "settings") Show("settings"); }, TimeSpan.FromSeconds(4));
+            Show("settings");
+            return;
+        }
+        separateArmed = false;
+        await DeleteSeparateNow();
+        Show("settings");
+    }
+
+    async Task<string?> DeleteSeparateNow()
+    {
+        if (game == null || working || !GameCopy.IsCopy(game)) return "There's no separate install to delete.";
+        if (GameFinder.GameRunning()) return "Close Brawlhalla first.";
+        working = true;
+        var copy = game;
+        string? why = null;
+        try
+        {
+            await GameCopy.DeleteInstallAsync(copy);
+            ForgetGame();
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            why = e.Message;
+            log.Append(e.Message);
+        }
+        finally
+        {
+            working = false;
+            Refresh();
+        }
+        Notify(why == null ? "Separate install deleted" : "Not deleted",
+            why ?? "Bifrost's copy of the game is gone. Saves, settings, replays and mods are kept.",
+            why == null ? NotificationType.Information : NotificationType.Warning);
+        return why;
+    }
+
+    void ForgetGame()
+    {
+        project.Settings.InstallPlace = null;
+        project.Settings.GameFolder = null;
+        project.Settings.Save();
+        game = GameFinder.Find(project.Settings);
+        LoadArt();
+        Refresh();
     }
 
     async Task Locate()
@@ -920,6 +990,11 @@ public sealed class MainWindow : Window
                 Notify("Pick another folder", "That is Steam's own copy of the game.", NotificationType.Warning);
                 return;
             }
+        }
+        if (GameCopy.IsCopy(target) && EngineKit.Installed(target!) != null && !EngineKit.GameMatches(steam, latest))
+        {
+            Notify("Not updated yet", "Bifrost isn't out for Steam's new Brawlhalla yet. This copy keeps playing until it is, so update it then.", NotificationType.Warning);
+            return;
         }
         if (!await CopyGame(steam, target!, game ?? steam)) return;
         Notify("Separate copy ready", "Steam's updates won't change this copy. Install Bifrost or Official on it, and use Update from Steam in Settings to bring it up to date.",
@@ -961,41 +1036,7 @@ public sealed class MainWindow : Window
     async Task<string?> AskInstallPlace()
     {
         string? chosen = null;
-        var dialog = new Window
-        {
-            Title = "Where to install Bifrost", Width = 560, SizeToContent = SizeToContent.Height, CanResize = false,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner, Background = Look.Brush(Look.Panel),
-        };
-        Control Choice(string place, string head, string icon)
-        {
-            var button = Look.Secondary(head, icon, () => { chosen = place; dialog.Close(); });
-            return new StackPanel
-            {
-                Spacing = 6,
-                Children =
-                {
-                    button,
-                    new TextBlock { Text = InstallPlace.Describe(place), TextWrapping = TextWrapping.Wrap, FontSize = 13, Foreground = Look.Brush(Look.Dim) },
-                },
-            };
-        }
-        dialog.Content = new StackPanel
-        {
-            Margin = new Thickness(26), Spacing = 16,
-            Children =
-            {
-                new TextBlock { Text = "Where should Bifrost go?", FontSize = 22, FontWeight = FontWeight.Bold, Foreground = Look.Brush(Look.Text) },
-                Choice(InstallPlace.Steam, "Install on Steam", Look.Play),
-                Choice(InstallPlace.Own, "Install in its own folder", Look.Folder),
-                new TextBlock
-                {
-                    Text = "Either way, Bifrost's engine, saves and settings stay out of Steam's folder. "
-                           + "You can switch later under Advanced in the gear menu.",
-                    TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = Look.Brush(Look.Dim),
-                },
-                Row(Look.Secondary("Cancel", Look.Stop, () => dialog.Close())),
-            },
-        };
+        var dialog = InstallPlaceDialog.Make(place => chosen = place);
         await dialog.ShowDialog(this);
         return chosen;
     }
@@ -1005,6 +1046,7 @@ public sealed class MainWindow : Window
         if (game == null || working) return "Wait for the app to finish what it's doing.";
         if (GameFinder.GameRunning()) return "Close Brawlhalla first.";
         if (GameFinder.SteamInstall() is not { } steam) return "Steam's Brawlhalla wasn't found.";
+        var from = game;
         var to = InstallPlace.Of(game) == InstallPlace.Steam ? InstallPlace.Own : InstallPlace.Steam;
         var installed = EngineKit.EngineInstalled(game);
         if (installed && !engine.PlacesEngine) return "Switching needs a newer Bifrost release. Update first, then try again.";
@@ -1032,8 +1074,15 @@ public sealed class MainWindow : Window
         }
         else UseFolder(steam);
         if (installed) await Install();
-        if (to == InstallPlace.Steam && GameCopy.Unused(game) != null)
-            Notify("Old game copy", "Bifrost runs from Steam now. Its own copy of the game can be deleted under Folders in the gear menu.", NotificationType.Information);
+        if (to == InstallPlace.Steam && GameCopy.IsCopy(from) && GameCopy.CantDelete(from) == null)
+        {
+            try { await GameCopy.DeleteAsync(from); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                log.Append(e.Message);
+                Notify("Old game copy", "Bifrost runs from Steam now. Its old copy couldn't be deleted, so delete it under Folders in the gear menu.", NotificationType.Warning);
+            }
+        }
         return null;
     }
 }

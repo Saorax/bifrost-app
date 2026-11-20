@@ -4,8 +4,19 @@ public static class GameCopy
 {
     const string Backup = ".bifrost-original";
     const string Exe = "Brawlhalla.exe";
+    public const string CopyMarker = "bifrost-copy.txt";
 
-    static readonly string[] Skipped = [EngineKit.Marker, "steam_appid.txt", GameFinder.LauncherAside];
+    static readonly string[] Skipped = [EngineKit.Marker, "steam_appid.txt", GameFinder.LauncherAside, CopyMarker];
+
+    public static bool IsCopy(string? game) =>
+        game != null && !GameFinder.IsSteamInstall(game)
+        && (InstallPlace.IsOwnFolder(game) || File.Exists(Path.Combine(game, CopyMarker)));
+
+    static string ExeTarget(string target)
+    {
+        try { return GameFinder.IsGame(target) ? EngineKit.OriginalExe(target) : Path.Combine(target, Exe); }
+        catch (InvalidOperationException) { return Path.Combine(target, Exe); }
+    }
 
     public static Task MakeAsync(string steam, string target, Action<double> progress, CancellationToken cancel) =>
         Task.Run(() => Mirror(steam, target, progress, cancel), cancel);
@@ -41,7 +52,7 @@ public static class GameCopy
             var info = new FileInfo(source);
             if (!Current(rel, info, target))
             {
-                var path = Path.Combine(target, rel);
+                var path = rel.Equals(Exe, StringComparison.OrdinalIgnoreCase) ? ExeTarget(target) : Path.Combine(target, rel);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 if (File.Exists(path)) File.SetAttributes(path, FileAttributes.Normal);
                 File.Copy(source, path, true);
@@ -52,6 +63,7 @@ public static class GameCopy
         foreach (var old in Directory.EnumerateFiles(target).Where(f => Path.GetExtension(f).ToLowerInvariant() is ".swf" or ".swz"))
             if (!files.ContainsKey(Path.GetFileName(old))) File.Delete(old);
         GameFinder.MarkSteamApp(target);
+        File.WriteAllText(Path.Combine(target, CopyMarker), "A copy of Steam's Brawlhalla made by the Bifrost app." + Environment.NewLine);
     }
 
     static long Pending(Dictionary<string, string> files, string target) =>
@@ -83,9 +95,24 @@ public static class GameCopy
         return null;
     }
 
+    public static async Task DeleteInstallAsync(string copy)
+    {
+        if (!IsCopy(copy)) throw new InvalidOperationException("That's not a separate install, so it wasn't deleted.");
+        if (CantDelete(copy) is { } why) throw new InvalidOperationException(why);
+        var engine = EngineKit.EngineDir(copy);
+        var saves = new[] { EngineKit.Storage(copy), EngineKit.Storage(copy, true), Path.Combine(engine, "storage"), Path.Combine(engine, "storage-official") };
+        var home = Path.GetFullPath(BifrostFolders.Home).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+        var ownEngine = Directory.Exists(engine) && Path.GetFullPath(engine).StartsWith(home, StringComparison.OrdinalIgnoreCase)
+                        && !saves.Any(s => Directory.Exists(s) && (Path.GetFullPath(s) + Path.DirectorySeparatorChar).StartsWith(
+                            Path.GetFullPath(engine).TrimEnd('\\', '/') + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        await DeleteAsync(copy);
+        if (ownEngine) await DeleteAsync(engine);
+    }
+
     public static Task DeleteAsync(string copy) => Task.Run(() =>
     {
-        foreach (var file in Directory.EnumerateFiles(copy, "*", SearchOption.AllDirectories))
+        var walk = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true };
+        foreach (var file in Directory.EnumerateFiles(copy, "*", walk))
             if (File.GetAttributes(file).HasFlag(FileAttributes.ReadOnly)) File.SetAttributes(file, FileAttributes.Normal);
         Directory.Delete(copy, true);
     });

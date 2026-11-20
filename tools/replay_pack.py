@@ -2,10 +2,11 @@
 game files: per version the Steam manifest to download, the download size, the member-name table and the replay
 versions; the compiled replay harness; and replay_copy.py. The game files come from Steam with the player's account.
 
-    python tools/replay_pack.py [--copies DIR] [--history DIR] [--harness-source DIR] [--out build/replay-pack]
+    python tools/replay_pack.py [--copies DIR ...] [--base-pack DIR] [--history DIR] [--harness-source DIR] [--out build/replay-pack]
 
---copies is the folder of replay-harness copies (each with bifrost-harness-info.json, bifrost-harness-names.json)
-and walk-results.tsv; --history the release-history archive (manifests/ for sizes); --harness-source the folder
+--copies is a folder of replay-harness copies (repeatable) (each with bifrost-harness-info.json, bifrost-harness-names.json)
+and walk-results.tsv; --base-pack an unpacked earlier pack whose versions are kept, and copies only add versions it lacks;
+--history the release-history archive (manifests/ for sizes); --harness-source the folder
 with make_copy.py, used to compile the harness. Upload build/replay-pack/replay-pack.zip as the asset of the
 release tagged replay-pack in the app repository.
 """
@@ -25,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP, DEPOT = 291550, 291551
-EXTRA = {"10.11": "252787301610705290"}
+EXTRA = {"10.11": "252787301610705290", "11.00.49": "4224536525702420323"}
 AUDIO_KEPT = re.compile(r"(^|[\\/])Init\.bnk$", re.I)
 
 
@@ -55,18 +56,22 @@ def download_bytes(manifest: Path) -> int | None:
 def main() -> int:
     local = Path(os.environ.get("LOCALAPPDATA", "")) / "Bifrost" / "Build" / "Work" / "replay-harness"
     ap = argparse.ArgumentParser()
-    ap.add_argument("--copies", default=str(local))
+    ap.add_argument("--copies", action="append")
+    ap.add_argument("--base-pack")
     ap.add_argument("--history", default="C:/Coding/BRAWLHALLA PROJECTS/data/release-history")
     ap.add_argument("--harness-source", default="C:/Coding/bifrost/data/replay-harness")
     ap.add_argument("--out", default=str(ROOT / "build" / "replay-pack"))
     args = ap.parse_args()
-    copies, history, out = Path(args.copies), Path(args.history), Path(args.out)
+    folders = [Path(c) for c in args.copies or [str(local)]]
+    history, out = Path(args.history), Path(args.out)
     manifests = {}
-    walk = copies / "walk-results.tsv"
-    for row in walk.read_text(encoding="utf-8").splitlines():
-        cells = row.split("\t")
-        if len(cells) > 2 and cells[2].isdigit():
-            manifests[cells[1]] = cells[2]
+    for walk in (f / "walk-results.tsv" for f in folders):
+        if not walk.exists():
+            continue
+        for row in walk.read_text(encoding="utf-8").splitlines():
+            cells = row.split("\t")
+            if len(cells) > 2 and cells[2].isdigit():
+                manifests[cells[1]] = cells[2]
     manifests.update(EXTRA)
     stage = out / "replay-pack"
     if stage.exists():
@@ -80,15 +85,26 @@ def main() -> int:
     for i, block in enumerate(blocks):
         (stage / "harness" / f"harness-{i:02d}.abc").write_bytes(block)
     shutil.copyfile(ROOT / "tools" / "replay_copy.py", stage / "replay_copy.py")
-    versions, skipped = [], []
-    for d in sorted(copies.iterdir()):
+    versions, skipped, seen = [], [], set()
+    if args.base_pack:
+        base = Path(args.base_pack)
+        for v in json.loads((base / "index.json").read_text(encoding="utf-8"))["versions"]:
+            if v["tag"] in seen or not (base / "names" / f"{v['tag']}.json").exists():
+                continue
+            seen.add(v["tag"])
+            shutil.copyfile(base / "names" / f"{v['tag']}.json", stage / "names" / f"{v['tag']}.json")
+            versions.append(v)
+    for d in sorted((d for f in folders for d in f.iterdir()), key=lambda d: d.name):
         info_file, names_file = d / "bifrost-harness-info.json", d / "bifrost-harness-names.json"
         if not d.is_dir() or not info_file.exists() or not names_file.exists():
             continue
         tag = d.name
+        if tag in seen:
+            continue
         if tag not in manifests:
             skipped.append(f"{tag} (no manifest)")
             continue
+        seen.add(tag)
         info = json.loads(info_file.read_text(encoding="utf-8"))
         size = download_bytes(history / "manifests" / f"manifest_{DEPOT}_{manifests[tag]}.txt")
         shutil.copyfile(names_file, stage / "names" / f"{tag}.json")
